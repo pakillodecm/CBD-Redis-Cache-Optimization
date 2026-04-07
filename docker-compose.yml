@@ -1,27 +1,31 @@
 services:
-  db:
+  almacen-datos:
     image: postgres:15
     restart: always
     environment:
-      POSTGRES_USER: usuario_cbd
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: bd_proyecto
+      POSTGRES_USER: user_cbd
+      POSTGRES_PASSWORD: password_cbd
+      POSTGRES_DB: bd_proyecto_cbd
     ports:
-      - "5432:5432"
+      - "5433:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
 
-  redis:
+  cache-memoria:
     image: redis:7-alpine
     restart: always
     ports:
-      - "6379:6379"
+      - "6380:6379"
 
   app:
     build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - almacen-datos
+      - cache-memoria
+    environment:
+      DB_HOST: almacen-datos
+      REDIS_HOST: cache-memoria
     volumes:
       - .:/app
-    depends_on:
-      - db
-      - redis
-    environment:
-      DB_HOST: db
-      REDIS_HOST: redis
