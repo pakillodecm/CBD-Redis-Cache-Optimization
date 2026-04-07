@@ -1,42 +1,11 @@
-### Python ###
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-.venv
+.venv/
 venv/
-ENV/
-
-### Docker ###
+.env
 pgdata/
 redisdata/
-
-### Entorno y Secretos ###
-.env
-.venv
-.docker-env
-
-### IDEs y Editores ###
 .vscode/
 .idea/
-*.swp
-*.swo
-.DS_Store (Mac)
-Thumbs.db (Windows)
+.DS_Store
+Thumbs.db
