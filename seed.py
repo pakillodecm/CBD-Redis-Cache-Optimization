@@ -70,29 +70,35 @@ def seed():
         for i in range(0, total_records, batch_size):
             values = []
             for _ in range(batch_size):
-                # Using replace("'", "''") to escape single quotes in SQL
+                # Keep generated text raw and use parameterized SQL below.
                 title = (
                     fake.sentence(nb_words=random.randint(2, 5))
                     .title()
                     .replace(".", "")
-                    .replace("'", "''")
                 )
                 genre = random.choice(genres)
                 release_year = random.randint(1950, 2026)
                 rating = round(random.uniform(1.0, 10.0), 1)
-                director = fake.name().replace("'", "''")
-                synopsis = fake.paragraph(nb_sentences=3).replace("'", "''")
+                director = fake.name()
+                synopsis = fake.paragraph(nb_sentences=3)
 
                 values.append(
-                    f"('{title}', '{genre}', {release_year}, {rating}, '{director}', '{synopsis}')"
+                    {
+                        "title": title,
+                        "genre": genre,
+                        "release_year": release_year,
+                        "rating": rating,
+                        "director": director,
+                        "synopsis": synopsis,
+                    }
                 )
 
-            query = text(f"""
-                INSERT INTO films (title, genre, release_year, rating, director, synopsis) 
-                VALUES {",".join(values)}
+            query = text("""
+                INSERT INTO films (title, genre, release_year, rating, director, synopsis)
+                VALUES (:title, :genre, :release_year, :rating, :director, :synopsis)
             """)
 
-            conn.execute(query)
+            conn.execute(query, values)
             conn.commit()
             percentage_completed = ((i + batch_size) / total_records) * 100
             print(
@@ -101,6 +107,7 @@ def seed():
                 flush=True,
             )
 
+    engine.dispose()
     print("\n🎫 ¡Catálogo de 100,000 películas listo para el análisis!")
 
 
