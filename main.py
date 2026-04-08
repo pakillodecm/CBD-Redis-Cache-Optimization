@@ -3,10 +3,11 @@ import os
 import time
 import unicodedata
 from decimal import Decimal
+from enum import Enum
 
 import redis
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 
@@ -43,6 +44,30 @@ def normalize_key(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text_str)
     clean_text = normalized.encode("ascii", "ignore").decode("ascii")
     return clean_text.lower().strip().replace(" ", "_")
+
+
+class GenreEnum(str, Enum):
+    action = "Acción"
+    drama = "Drama"
+    comedy = "Comedia"
+    sci_fi = "Ciencia Ficción"
+    horror = "Terror"
+    documentary = "Documental"
+    thriller = "Suspense"
+    adventure = "Aventura"
+
+
+class FilmSchema(BaseModel):
+    title: str = Field(..., example="Interstellar")
+    genre: GenreEnum
+    release_year: int = Field(..., gt=1888, le=2026)
+    rating: float = Field(..., ge=0, le=10)
+    director: str
+    synopsis: str
+
+
+FilmCreate = FilmSchema
+FilmUpdate = FilmSchema
 
 
 @app.get("/")
@@ -109,6 +134,42 @@ def get_film_stats(
             "source": "PostgreSQL (Cache Miss - Stats)",
             "latency_ms": round(execution_time, 4),
         }
+
+
+@app.post("/films")
+def create_film(film: FilmCreate):
+    start_time = time.time()
+    with engine.connect() as conn:
+        # We use .value to get the string from the Enum
+        query = text("""
+            INSERT INTO films (title, genre, release_year, rating, director, synopsis)
+            VALUES (:title, :genre, :year, :rating, :director, :synopsis)
+            RETURNING id
+        """)
+        result = conn.execute(
+            query,
+            {
+                "title": film.title,
+                "genre": film.genre.value,
+                "year": film.release_year,
+                "rating": film.rating,
+                "director": film.director,
+                "synopsis": film.synopsis,
+            },
+        )
+        new_id = result.fetchone()[0]
+        conn.commit()
+
+        # Invalidate genre-specific caches
+        norm_genre = normalize_key(film.genre.value)
+        cache.delete(f"genre:{norm_genre}")
+        cache.delete(f"stats:{norm_genre}")
+
+    return {
+        "msg": "Film created",
+        "id": new_id,
+        "latency_ms": round((time.time() - start_time) * 1000, 4),
+    }
 
 
 @app.get("/films/{id}")
@@ -230,6 +291,36 @@ def update_film(id: int, update: FilmUpdate):
     return {
         "msg": "Película actualizada y cachés sincronizadas",
         "genre_changed": old_genre != new_genre,
+        "latency_ms": round((time.time() - start_time) * 1000, 4),
+    }
+
+
+@app.delete("/films/{id}")
+def delete_film(id: int):
+    start_time = time.time()
+    with engine.connect() as conn:
+        # Using mappings() to avoid the [0] index and use keys instead
+        row = (
+            conn.execute(text("SELECT genre FROM films WHERE id = :id"), {"id": id})
+            .mappings()
+            .fetchone()
+        )
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Film not found")
+
+        genre = row["genre"]  # Clean access via key
+        conn.execute(text("DELETE FROM films WHERE id = :id"), {"id": id})
+        conn.commit()
+
+        # Wipe Redis traces
+        norm_genre = normalize_key(genre)
+        cache.delete(f"film:{id}")
+        cache.delete(f"genre:{norm_genre}")
+        cache.delete(f"stats:{norm_genre}")
+
+    return {
+        "msg": "Film deleted and cache synced",
         "latency_ms": round((time.time() - start_time) * 1000, 4),
     }
 
