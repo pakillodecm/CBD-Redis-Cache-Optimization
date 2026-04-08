@@ -186,6 +186,8 @@ def create_film(film: FilmCreate):
         norm_genre = normalize_key(film.genre.value)
         cache.delete(f"genre:{norm_genre}")
         cache.delete(f"stats:{norm_genre}")
+        cache.delete("genre:all")
+        cache.delete("stats:all")
 
     return {
         "msg": "Film created",
@@ -244,16 +246,6 @@ def get_film_by_id(id: int):
         }
 
 
-# 1. Contract for the full update
-class FilmUpdate(BaseModel):
-    title: str
-    genre: str
-    release_year: int
-    rating: float
-    director: str
-    synopsis: str
-
-
 @app.put("/films/{id}")
 def update_film(id: int, update: FilmUpdate):
     """
@@ -310,6 +302,10 @@ def update_film(id: int, update: FilmUpdate):
             cache.delete(f"genre:{norm_new}")
             cache.delete(f"stats:{norm_new}")
 
+        # 4. Always refresh global caches for unfiltered reads
+        cache.delete("genre:all")
+        cache.delete("stats:all")
+
     return {
         "msg": "Película actualizada y cachés sincronizadas",
         "genre_changed": old_genre != new_genre,
@@ -340,6 +336,8 @@ def delete_film(id: int):
         cache.delete(f"film:{id}")
         cache.delete(f"genre:{norm_genre}")
         cache.delete(f"stats:{norm_genre}")
+        cache.delete("genre:all")
+        cache.delete("stats:all")
 
     return {
         "msg": "Film deleted and cache synced",
