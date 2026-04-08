@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import redis
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import create_engine, text
 
 
@@ -42,6 +43,17 @@ def normalize_key(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text_str)
     clean_text = normalized.encode("ascii", "ignore").decode("ascii")
     return clean_text.lower().strip().replace(" ", "_")
+
+
+@app.get("/")
+def health_check():
+    return {"status": "Ready", "infrastructure": "Dockerized"}
+
+
+@app.get("/clear-cache")
+def clear_cache():
+    cache.flushall()
+    return {"msg": "Cache purged successfully"}
 
 
 @app.get("/films/stats")
@@ -149,6 +161,79 @@ def get_film_by_id(id: int):
         }
 
 
+# 1. Contract for the full update
+class FilmUpdate(BaseModel):
+    title: str
+    genre: str
+    release_year: int
+    rating: float
+    director: str
+    synopsis: str
+
+
+@app.put("/films/{id}")
+def update_film(id: int, update: FilmUpdate):
+    """
+    Full update of a film.
+    Handles 'Cross-Genre' cache invalidation if the genre changes.
+    """
+    start_time = time.time()
+
+    with engine.connect() as conn:
+        # A. Fetch OLD data before updating (to know what to clean)
+        old_data = conn.execute(
+            text("SELECT genre FROM films WHERE id = :id"), {"id": id}
+        ).fetchone()
+
+        if not old_data:
+            raise HTTPException(status_code=404, detail="Film not found")
+
+        old_genre = old_data.genre
+        new_genre = update.genre
+
+        # B. Update Database with new values
+        update_query = text("""
+            UPDATE films SET 
+                title = :title, genre = :genre, release_year = :year, 
+                rating = :rating, director = :director, synopsis = :synopsis
+            WHERE id = :id
+        """)
+        conn.execute(
+            update_query,
+            {
+                "title": update.title,
+                "genre": update.genre,
+                "year": update.release_year,
+                "rating": update.rating,
+                "director": update.director,
+                "synopsis": update.synopsis,
+                "id": id,
+            },
+        )
+        conn.commit()
+
+        # C. SMART INVALIDATION
+        # 1. Always kill the specific film cache
+        cache.delete(f"film:{id}")
+
+        # 2. Kill OLD genre caches
+        norm_old = normalize_key(old_genre)
+        cache.delete(f"genre:{norm_old}")
+        cache.delete(f"stats:{norm_old}")
+
+        # 3. If genre changed, kill NEW genre caches too
+        if old_genre != new_genre:
+            norm_new = normalize_key(new_genre)
+            cache.delete(f"genre:{norm_new}")
+            cache.delete(f"stats:{norm_new}")
+
+    return {
+        "msg": "Película actualizada y cachés sincronizadas",
+        "genre_changed": old_genre != new_genre,
+        "latency_ms": round((time.time() - start_time) * 1000, 4),
+    }
+
+
 @app.get("/films")
 def get_films(genre: str = Query(None, description="Filter films by genre")):
     start_time = time.time()
@@ -197,14 +282,3 @@ def get_films(genre: str = Query(None, description="Filter films by genre")):
             "source": "PostgreSQL (Cache Miss)",
             "latency_ms": round(execution_time, 4),
         }
-
-
-@app.get("/clear-cache")
-def clear_cache():
-    cache.flushall()
-    return {"msg": "Cache purged successfully"}
-
-
-@app.get("/")
-def health_check():
-    return {"status": "Ready", "infrastructure": "Dockerized"}
