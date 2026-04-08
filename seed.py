@@ -2,20 +2,23 @@ import os
 import random
 import time
 
+from faker import Faker
 from sqlalchemy import create_engine, text
 
-# --- CONFIGURACIÓN ---
+# --- CONFIG ---
 DB_HOST = os.getenv("DB_HOST", "almacen-datos")
-DB_USER = "user_cbd"
-DB_PASS = "password_cbd"
-DB_NAME = "bd_proyecto_cbd"
+DB_USER = os.getenv("DB_USER", "user_cbd")
+DB_PASS = os.getenv("DB_PASS", "password_cbd")
+DB_NAME = os.getenv("DB_NAME", "bd_proyecto_cbd")
 
 DB_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
+
+fake = Faker("es_ES")  # Data generator in spanish
 
 
 def seed():
     print(f"🚀 Conectando a {DB_HOST}...")
-    # Reintento simple por si la DB aún está arrancando
+    # Wait for DB to be ready (retry logic)
     engine = None
     for i in range(10):
         try:
@@ -32,46 +35,73 @@ def seed():
         return
 
     with engine.connect() as conn:
-        print("🧹 Limpiando tabla anterior...")
-        conn.execute(text("DROP TABLE IF EXISTS productos"))
+        print("🧹 Limpiando catálogo anterior...")
+        conn.execute(text("DROP TABLE IF EXISTS films"))
         conn.execute(
             text("""
-            CREATE TABLE productos (
+            CREATE TABLE films (
                 id SERIAL PRIMARY KEY,
-                nombre VARCHAR(100),
-                categoria VARCHAR(50),
-                precio DECIMAL(10,2),
-                descripcion TEXT
+                title VARCHAR(255),
+                genre VARCHAR(100),
+                release_year INTEGER,
+                rating DECIMAL(3,1),
+                director VARCHAR(100),
+                synopsis TEXT
             )
         """)
         )
         conn.commit()
 
-        print("📦 Insertando 100,000 registros en lotes...")
+        print("🎬 Generando datos aleatorios con Faker...")
         total_records = 100000
-        batch_size = 10000
+        batch_size = 6250
 
-        categorias = ["Electrónica", "Hogar", "Jardín", "Libros", "Ropa", "Deportes"]
+        genres = [
+            "Acción",
+            "Drama",
+            "Comedia",
+            "Ciencia Ficción",
+            "Terror",
+            "Documental",
+            "Suspense",
+            "Aventura",
+        ]
 
         for i in range(0, total_records, batch_size):
             values = []
-            for j in range(batch_size):
-                num = i + j
-                nombre = f"Producto Pro {num}"
-                cat = random.choice(categorias)
-                precio = round(random.uniform(5.0, 1500.0), 2)
-                desc = (
-                    f"Esta es una descripción detallada para el producto {num}. " * 10
+            for _ in range(batch_size):
+                # Using replace("'", "''") to escape single quotes in SQL
+                title = (
+                    fake.sentence(nb_words=random.randint(2, 5))
+                    .title()
+                    .replace(".", "")
+                    .replace("'", "''")
                 )
-                values.append(f"('{nombre}', '{cat}', {precio}, '{desc}')")
+                genre = random.choice(genres)
+                release_year = random.randint(1950, 2026)
+                rating = round(random.uniform(1.0, 10.0), 1)
+                director = fake.name().replace("'", "''")
+                synopsis = fake.paragraph(nb_sentences=3).replace("'", "''")
 
-            # Inserción masiva para ganar velocidad
-            query = f"INSERT INTO productos (nombre, categoria, precio, descripcion) VALUES {','.join(values)}"
-            conn.execute(text(query))
+                values.append(
+                    f"('{title}', '{genre}', {release_year}, {rating}, '{director}', '{synopsis}')"
+                )
+
+            query = text(f"""
+                INSERT INTO films (title, genre, release_year, rating, director, synopsis) 
+                VALUES {",".join(values)}
+            """)
+
+            conn.execute(query)
             conn.commit()
-            print(f"✅ Registros insertados: {i + batch_size}")
+            percentage_completed = ((i + batch_size) / total_records) * 100
+            print(
+                f"\r🎲 Registrando películas... ({percentage_completed:.0f}%)",
+                end="",
+                flush=True,
+            )
 
-    print("\n✨ ¡Base de datos poblada con éxito!")
+    print("\n🎫 ¡Catálogo de 100,000 películas listo para el análisis!")
 
 
 if __name__ == "__main__":
