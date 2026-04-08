@@ -91,6 +91,42 @@ def get_producto(id: int):
         }
 
 
+@app.get("/productos/categoria/{cat}")
+def get_productos_por_categoria(cat: str):
+    start_time = time.time()
+    cache_key = f"cat:{cat}"
+
+    # 1. Intentar Redis
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return {
+            "data": json.loads(cached_data),
+            "source": "cache-memoria (Redis)",
+            "latency_ms": round((time.time() - start_time) * 1000, 4),
+        }
+
+    # 2. Si falla, ir a Postgres
+    with engine.connect() as conn:
+        query = text(
+            "SELECT id, nombre, categoria, precio FROM productos WHERE categoria = :cat LIMIT 500"
+        )
+        results = conn.execute(query, {"cat": cat}).fetchall()
+
+        productos = [
+            {"id": r[0], "nombre": r[1], "categoria": r[2], "precio": float(r[3])}
+            for r in results
+        ]
+
+        # 3. Guardar en caché
+        cache.setex(cache_key, 600, json.dumps(productos))
+
+        return {
+            "data": productos,
+            "source": "almacen-datos (PostgreSQL)",
+            "latency_ms": round((time.time() - start_time) * 1000, 4),
+        }
+
+
 # Endpoint para limpiar la caché y forzar el "sufrimiento" de la DB en las pruebas
 @app.get("/clear-cache")
 def clear_cache():
