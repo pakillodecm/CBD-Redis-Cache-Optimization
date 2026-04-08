@@ -44,9 +44,59 @@ def normalize_key(text: str) -> str:
     return clean_text.lower().strip().replace(" ", "_")
 
 
-@app.get("/")
-def health_check():
-    return {"status": "Ready", "infrastructure": "Dockerized"}
+@app.get("/films/stats")
+def get_film_stats(
+    genre: str = Query(None, description="Get aggregate stats by genre"),
+):
+    """
+    Perform heavy aggregation logic on the database and cache the result.
+    Demonstrates CPU-saving via Cache-Aside.
+    """
+    start_time = time.time()
+
+    # Normalize key specifically for stats
+    normalized_genre = normalize_key(genre)
+    cache_key = f"stats:{normalized_genre}"
+
+    # 1. Cache lookup
+    cached_stats = cache.get(cache_key)
+    if cached_stats:
+        return {
+            "data": json.loads(cached_stats),
+            "source": "Redis (Cache Hit - Stats)",
+            "latency_ms": round((time.time() - start_time) * 1000, 4),
+        }
+
+    # 2. Heavy SQL Aggregation
+    with engine.connect() as conn:
+        query = text("""
+            SELECT 
+                COUNT(*) as total_count,
+                AVG(rating) as avg_rating,
+                MIN(release_year) as oldest_year,
+                MAX(release_year) as newest_year
+            FROM films
+            WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre)
+        """)
+        result = conn.execute(query, {"genre": genre}).fetchone()
+
+        # Build stats dictionary with English keys
+        stats = {
+            "total_count": result[0],
+            "avg_rating": round(float(result[1]), 2) if result[1] else 0,
+            "oldest_year": result[2],
+            "newest_year": result[3],
+        }
+
+        # 3. Store in cache (Cache-Aside)
+        cache.setex(cache_key, 600, json.dumps(stats, cls=DecimalEncoder))
+
+        execution_time = (time.time() - start_time) * 1000
+        return {
+            "data": stats,
+            "source": "PostgreSQL (Cache Miss - Stats)",
+            "latency_ms": round(execution_time, 4),
+        }
 
 
 @app.get("/films/{id}")
@@ -119,7 +169,7 @@ def get_films(genre: str = Query(None, description="Filter films by genre")):
         query = text(
             "SELECT id, title, genre, release_year, rating, director, synopsis "
             "FROM films "
-            "WHERE (:genre IS NULL OR genre ILIKE :genre) "
+            "WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre) "
             "LIMIT 500"
         )
         results = conn.execute(query, {"genre": genre}).fetchall()
@@ -153,3 +203,8 @@ def get_films(genre: str = Query(None, description="Filter films by genre")):
 def clear_cache():
     cache.flushall()
     return {"msg": "Cache purged successfully"}
+
+
+@app.get("/")
+def health_check():
+    return {"status": "Ready", "infrastructure": "Dockerized"}

@@ -120,6 +120,34 @@ if st.button("Cargar Catálogo"):
 
             # Prepare DataFrame for visualization
             if res["data"]:
+                # --- NEW SECTION: HEAVY ANALYTICS ---
+                st.subheader(f"📈 Resumen Estadístico: {selected_genre}")
+
+                try:
+                    stats_res = requests.get(
+                        f"{BACKEND_URL}/films/stats", params=params
+                    ).json()
+                    stats_data = stats_res["data"]
+
+                    # Create 4 cards for the metrics
+                    s_col1, s_col2, s_col3, s_col4 = st.columns(4)
+
+                    with s_col1:
+                        st.metric("Total Películas", f"{stats_data['total_count']:,}")
+                    with s_col2:
+                        st.metric("Puntuación Media", f"{stats_data['avg_rating']} ⭐")
+                    with s_col3:
+                        st.metric("Año más antiguo", stats_data["oldest_year"])
+                    with s_col4:
+                        st.metric("Último estreno", stats_data["newest_year"])
+
+                    st.caption(
+                        f"Latencia de cálculo: {stats_res['latency_ms']} ms ({stats_res['source']})"
+                    )
+                    st.markdown("---")
+                except Exception as e:
+                    st.warning(f"No se pudieron cargar las estadísticas: {e}")
+
                 df = pd.DataFrame(res["data"])
                 # Rename columns for the user
                 df_display = df.rename(columns=LABEL_MAP)
