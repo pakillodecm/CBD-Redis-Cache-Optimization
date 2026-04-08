@@ -32,6 +32,17 @@ def clear_redis_cache():
         st.sidebar.error(f"⚠️ Error de conexión: {e}")
 
 
+@st.cache_data(show_spinner=False)
+def get_genre_map():
+    response = requests.get(f"{BACKEND_URL}/genres")
+    if response.status_code != 200:
+        raise RuntimeError("No se pudo cargar la lista de géneros")
+    data = response.json().get("data", {})
+    if not isinstance(data, dict) or not data:
+        raise RuntimeError("Formato de géneros inválido")
+    return data
+
+
 # --- UI HEADER ---
 st.title("🚀 Panel de Control de Rendimiento (Redis vs SQL)")
 st.markdown("""
@@ -94,24 +105,26 @@ with col_id_1:
 
 # --- SECTION 2: SEARCH BY GENRE ---
 st.header("📊 Análisis por Género")
-genres_list = [
-    "Acción",
-    "Drama",
-    "Comedia",
-    "Ciencia Ficción",
-    "Terror",
-    "Documental",
-    "Suspense",
-    "Aventura",
-]
-selected_genre = st.selectbox(
-    "Selecciona un género para filtrar la colección", genres_list
-)
+try:
+    genre_key_to_label = get_genre_map()
+    genre_labels = list(genre_key_to_label.values())
+    selected_genre_label = st.selectbox(
+        "Selecciona un género para filtrar la colección",
+        genre_labels,
+    )
+    selected_genre_key = next(
+        key
+        for key, value in genre_key_to_label.items()
+        if value == selected_genre_label
+    )
+except Exception as e:
+    st.error(f"⚠️ Error cargando géneros desde el backend: {e}")
+    st.stop()
 
 if st.button("Cargar Catálogo"):
     try:
         # Using Query Parameters as discussed: /films?genre=...
-        params = {"genre": selected_genre}
+        params = {"genre": selected_genre_key}
         response = requests.get(f"{BACKEND_URL}/films", params=params)
 
         if response.status_code == 200:
@@ -121,7 +134,7 @@ if st.button("Cargar Catálogo"):
             # Prepare DataFrame for visualization
             if res["data"]:
                 # --- NEW SECTION: HEAVY ANALYTICS ---
-                st.subheader(f"📈 Resumen Estadístico: {selected_genre}")
+                st.subheader(f"📈 Resumen Estadístico: {selected_genre_label}")
 
                 try:
                     stats_res = requests.get(
