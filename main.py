@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 
 import redis
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
@@ -20,6 +20,16 @@ class DecimalEncoder(json.JSONEncoder):
 
 
 app = FastAPI(title="CBD: Optimización con Redis")
+
+
+@app.middleware("http")
+async def telemetry_middleware(request: Request, call_next):
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time_ms = (time.perf_counter() - start_time) * 1000
+    response.headers["X-Process-Time"] = f"{process_time_ms:.4f}"
+    return response
+
 
 # --- INFRASTRUCTURE CONFIG ---
 DB_HOST = os.getenv("DB_HOST", "almacen-datos")
@@ -111,8 +121,6 @@ def get_film_stats(
     Perform heavy aggregation logic on the database and cache the result.
     Demonstrates CPU-saving via Cache-Aside.
     """
-    start_time = time.time()
-
     genre_value = genre_key_to_db_value(genre)
     normalized_genre = normalize_key(genre_value)
     cache_key = f"stats:{normalized_genre}"
@@ -123,7 +131,6 @@ def get_film_stats(
         return {
             "data": json.loads(cached_stats),
             "source": "Redis (Cache Hit - Stats)",
-            "latency_ms": round((time.time() - start_time) * 1000, 4),
         }
 
     # 2. Heavy SQL Aggregation
@@ -150,17 +157,14 @@ def get_film_stats(
         # 3. Store in cache (Cache-Aside)
         cache.setex(cache_key, 600, json.dumps(stats, cls=DecimalEncoder))
 
-        execution_time = (time.time() - start_time) * 1000
         return {
             "data": stats,
             "source": "PostgreSQL (Cache Miss - Stats)",
-            "latency_ms": round(execution_time, 4),
         }
 
 
 @app.post("/films")
 def create_film(film: FilmCreate):
-    start_time = time.time()
     with engine.connect() as conn:
         # We use .value to get the string from the Enum
         query = text("""
@@ -192,24 +196,19 @@ def create_film(film: FilmCreate):
     return {
         "msg": "Film created",
         "id": new_id,
-        "latency_ms": round((time.time() - start_time) * 1000, 4),
     }
 
 
 @app.get("/films/{id}")
 def get_film_by_id(id: int):
-    start_time = time.time()
-
     # 1. Try to retrieve from cache
     cache_key = f"film:{id}"
     cached_data = cache.get(cache_key)
 
     if cached_data:
-        execution_time = (time.time() - start_time) * 1000
         return {
             "data": json.loads(cached_data),
             "source": "Redis (Cache Hit)",
-            "latency_ms": round(execution_time, 4),
         }
 
     # 2. If not in cache (Cache Miss), query the database
@@ -238,11 +237,9 @@ def get_film_by_id(id: int):
         # Using DecimalEncoder to handle Decimal types when serializing
         cache.setex(cache_key, 600, json.dumps(film, cls=DecimalEncoder))
 
-        execution_time = (time.time() - start_time) * 1000
         return {
             "data": film,
             "source": "PostgreSQL (Cache Miss)",
-            "latency_ms": round(execution_time, 4),
         }
 
 
@@ -252,8 +249,6 @@ def update_film(id: int, update: FilmUpdate):
     Full update of a film.
     Handles 'Cross-Genre' cache invalidation if the genre changes.
     """
-    start_time = time.time()
-
     with engine.connect() as conn:
         # A. Fetch OLD data before updating (to know what to clean)
         old_data = conn.execute(
@@ -309,13 +304,11 @@ def update_film(id: int, update: FilmUpdate):
     return {
         "msg": "Película actualizada y cachés sincronizadas",
         "genre_changed": old_genre != new_genre,
-        "latency_ms": round((time.time() - start_time) * 1000, 4),
     }
 
 
 @app.delete("/films/{id}")
 def delete_film(id: int):
-    start_time = time.time()
     with engine.connect() as conn:
         # Using mappings() to avoid the [0] index and use keys instead
         row = (
@@ -341,24 +334,20 @@ def delete_film(id: int):
 
     return {
         "msg": "Film deleted and cache synced",
-        "latency_ms": round((time.time() - start_time) * 1000, 4),
     }
 
 
 @app.get("/films")
 def get_films(genre: str | None = Query(None, description="Filter films by genre")):
-    start_time = time.time()
     genre_value = genre_key_to_db_value(genre)
     cache_key = f"genre:{normalize_key(genre_value)}"
 
     # 1. Try to retrieve from cache
     cached_data = cache.get(cache_key)
     if cached_data:
-        execution_time = (time.time() - start_time) * 1000
         return {
             "data": json.loads(cached_data),
             "source": "Redis (Cache Hit)",
-            "latency_ms": round(execution_time, 4),
         }
 
     # 2.  If not in cache, query the database
@@ -388,9 +377,7 @@ def get_films(genre: str | None = Query(None, description="Filter films by genre
         if films:
             cache.setex(cache_key, 600, json.dumps(films, cls=DecimalEncoder))
 
-        execution_time = (time.time() - start_time) * 1000
         return {
             "data": films,
             "source": "PostgreSQL (Cache Miss)",
-            "latency_ms": round(execution_time, 4),
         }

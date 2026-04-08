@@ -76,6 +76,7 @@ with col_id_1:
             response = requests.get(f"{BACKEND_URL}/films/{film_id}")
             if response.status_code == 200:
                 res = response.json()
+                process_time = response.headers.get("X-Process-Time", "0")
 
                 # Visual metrics in Spanish
                 source_label = (
@@ -85,7 +86,7 @@ with col_id_1:
                 )
                 st.metric(
                     "Latencia",
-                    f"{res['latency_ms']} ms",
+                    f"{process_time} ms",
                     delta=source_label,
                     delta_color="inverse",
                 )
@@ -129,6 +130,7 @@ if st.button("Cargar Catálogo"):
 
         if response.status_code == 200:
             res = response.json()
+            process_time = response.headers.get("X-Process-Time", "0")
             st.info(f"**Origen de los datos:** {res['source']}")
 
             # Prepare DataFrame for visualization
@@ -137,9 +139,13 @@ if st.button("Cargar Catálogo"):
                 st.subheader(f"📈 Resumen Estadístico: {selected_genre_label}")
 
                 try:
-                    stats_res = requests.get(
+                    stats_response = requests.get(
                         f"{BACKEND_URL}/films/stats", params=params
-                    ).json()
+                    )
+                    stats_res = stats_response.json()
+                    stats_process_time = stats_response.headers.get(
+                        "X-Process-Time", "0"
+                    )
                     stats_data = stats_res["data"]
 
                     # Create 4 cards for the metrics
@@ -155,7 +161,7 @@ if st.button("Cargar Catálogo"):
                         st.metric("Último estreno", stats_data["newest_year"])
 
                     st.caption(
-                        f"Latencia de cálculo: {stats_res['latency_ms']} ms ({stats_res['source']})"
+                        f"Latencia de cálculo: {stats_process_time} ms ({stats_res['source']})"
                     )
                     st.markdown("---")
                 except Exception as e:
@@ -174,7 +180,7 @@ if st.button("Cargar Catálogo"):
                 st.session_state.history.append(
                     {
                         "Consulta": len(st.session_state.history) + 1,
-                        "Latencia (ms)": res["latency_ms"],
+                        "Latencia (ms)": float(process_time),
                         "Origen": "PostgreSQL (Miss)"
                         if "PostgreSQL" in res["source"]
                         else "Redis (Hit)",
