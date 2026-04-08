@@ -104,6 +104,40 @@ with col_id_1:
         except Exception as e:
             st.error(f"⚠️ Error de conexión con el servidor: {e}")
 
+# --- SECTION 1.5: ADVANCED SEARCH ---
+st.header("🔍 Búsqueda Avanzada")
+search_query = st.text_input(
+    "Busca por palabras clave en título o sinopsis",
+    placeholder="Ejemplo: nave, amor, misterio",
+)
+
+if st.button("Buscar"):
+    clean_query = search_query.strip()
+    if not clean_query:
+        st.warning("Introduce un término de búsqueda.")
+    else:
+        try:
+            search_response = requests.get(
+                f"{BACKEND_URL}/films/search", params={"q": clean_query}
+            )
+            search_process_time = search_response.headers.get("X-Process-Time", "0")
+
+            if search_response.status_code == 200:
+                search_res = search_response.json()
+                st.info(f"**Origen de los datos:** {search_res['source']}")
+                st.caption(f"Latencia total backend: {search_process_time} ms")
+
+                if search_res["data"]:
+                    search_df = pd.DataFrame(search_res["data"])
+                    search_display = search_df.rename(columns=LABEL_MAP)
+                    st.dataframe(search_display, use_container_width=True)
+                else:
+                    st.warning("No se encontraron películas para esa búsqueda.")
+            else:
+                st.error("Error al ejecutar la búsqueda avanzada.")
+        except Exception as e:
+            st.error(f"⚠️ Error de comunicación: {e}")
+
 # --- SECTION 2: SEARCH BY GENRE ---
 st.header("📊 Análisis por Género")
 try:

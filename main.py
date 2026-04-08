@@ -163,6 +163,53 @@ def get_film_stats(
         }
 
 
+@app.get("/films/search")
+def search_films(
+    q: str = Query(..., description="Search keyword in title and synopsis"),
+):
+    clean_q = q.strip()
+    if not clean_q:
+        raise HTTPException(status_code=422, detail="Query cannot be empty")
+
+    cache_key = f"search:{normalize_key(clean_q)}"
+
+    cached_results = cache.get(cache_key)
+    if cached_results:
+        return {
+            "data": json.loads(cached_results),
+            "source": "Redis (Cache Hit - Search)",
+        }
+
+    with engine.connect() as conn:
+        query = text(
+            "SELECT id, title, genre, release_year, rating, director, synopsis "
+            "FROM films "
+            "WHERE title ILIKE :term OR synopsis ILIKE :term "
+            "LIMIT 50"
+        )
+        results = conn.execute(query, {"term": f"%{clean_q}%"}).fetchall()
+
+        films = [
+            {
+                "id": r[0],
+                "title": r[1],
+                "genre": r[2],
+                "release_year": r[3],
+                "rating": r[4],
+                "director": r[5],
+                "synopsis": r[6],
+            }
+            for r in results
+        ]
+
+        cache.setex(cache_key, 300, json.dumps(films, cls=DecimalEncoder))
+
+        return {
+            "data": films,
+            "source": "PostgreSQL (Cache Miss - Search)",
+        }
+
+
 @app.post("/films")
 def create_film(film: FilmCreate):
     with engine.connect() as conn:
