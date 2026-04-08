@@ -29,3 +29,15 @@ services:
       REDIS_HOST: cache-memoria
     volumes:
       - .:/app
+
+  frontend:
+    build: .
+    ports:
+      - "8501:8501"
+    depends_on:
+      - app
+    environment:
+      - BACKEND_URL=http://app:8000
+    volumes:
+      - .:/app
+    command: ["streamlit", "run", "frontend.py", "--server.port=8501", "--server.address=0.0.0.0"]
