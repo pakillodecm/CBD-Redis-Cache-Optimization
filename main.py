@@ -139,7 +139,7 @@ def get_films(genre: str = Query(None, description="Filter films by genre")):
 
         # 3. Save to cache (only if result is not empty to avoid caching misses)
         if films:
-            cache.setex(cache_key, 600, json.dumps(films))
+            cache.setex(cache_key, 600, json.dumps(films, cls=DecimalEncoder))
 
         execution_time = (time.time() - start_time) * 1000
         return {

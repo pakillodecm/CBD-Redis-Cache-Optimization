@@ -3,97 +3,156 @@ import plotly.express as px
 import requests
 import streamlit as st
 
+# --- SETTINGS ---
 st.set_page_config(page_title="Dashboard CBD - Optimización", layout="wide")
+BACKEND_URL = "http://app:8000"
+
+# Helper function to map technical keys to Spanish labels
+# This keeps our "internals" in English and "soul" in Spanish
+LABEL_MAP = {
+    "id": "ID",
+    "title": "Título",
+    "genre": "Género",
+    "release_year": "Año de Estreno",
+    "rating": "Puntuación",
+    "director": "Director",
+    "synopsis": "Sinopsis",
+}
+
+
+def clear_redis_cache():
+    """Call backend to flush all Redis keys."""
+    try:
+        response = requests.get(f"{BACKEND_URL}/clear-cache")
+        if response.status_code == 200:
+            st.sidebar.success("✅ Caché vaciada correctamente")
+        else:
+            st.sidebar.error("❌ Error al vaciar la caché")
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Error de conexión: {e}")
+
+
+# --- UI HEADER ---
 st.title("🚀 Panel de Control de Rendimiento (Redis vs SQL)")
+st.markdown("""
+Esta herramienta permite visualizar la diferencia de rendimiento al aplicar el patrón **Cache-Aside**.
+Las consultas a PostgreSQL (Miss) calculan el dato, mientras que Redis (Hit) entrega el resultado instantáneamente.
+""")
 st.markdown("---")
 
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ Ajustes")
+    st.header("⚙️ Ajustes de Sistema")
     if st.button("🧹 Limpiar Caché de Redis"):
-        requests.get("http://app:8000/clear-cache")
-        st.success("Caché vaciada correctamente")
+        clear_redis_cache()
 
-st.header("🔍 Búsqueda de Película por ID")
-col1, col2 = st.columns([1, 2])
+    st.markdown("---")
+    st.info(
+        "**Nota:** Los tiempos de latencia reflejan el procesamiento del Backend + acceso a datos."
+    )
 
-with col1:
-    film_id = st.number_input("Introduce el ID de la película", min_value=1, value=100)
+# --- SECTION 1: SEARCH BY ID ---
+st.header("🔍 Consulta Individual (Búsqueda por ID)")
+col_id_1, col_id_2 = st.columns([1, 2])
+
+with col_id_1:
+    film_id = st.number_input(
+        "Introduce el ID de la película", min_value=1, step=1, value=100
+    )
     if st.button("Consultar Película"):
-        res = requests.get(f"http://app:8000/film/{film_id}").json()
+        try:
+            # Plural endpoint as discussed: /films/{id}
+            response = requests.get(f"{BACKEND_URL}/films/{film_id}")
+            if response.status_code == 200:
+                res = response.json()
 
-        # Traducimos visualmente la fuente para el usuario
-        fuente = (
-            "Base de Datos (Lenta)"
-            if "PostgreSQL" in res["source"]
-            else "Memoria Redis (Rápida)"
-        )
+                # Visual metrics in Spanish
+                source_label = (
+                    "Base de Datos"
+                    if "PostgreSQL" in res["source"]
+                    else "Memoria Caché"
+                )
+                st.metric(
+                    "Latencia",
+                    f"{res['latency_ms']} ms",
+                    delta=source_label,
+                    delta_color="inverse",
+                )
 
-        st.metric("Latencia de respuesta", f"{res['latency_ms']} ms", delta=fuente)
+                # Transform English keys to Spanish for display
+                film_data = res["data"]
+                spanish_details = {
+                    LABEL_MAP[k]: v for k, v in film_data.items() if k in LABEL_MAP
+                }
 
-        # Mapeamos las claves inglesas a etiquetas españolas para mostrar el JSON bonito
-        datos_es = {
-            "Título": res["data"]["title"],
-            "Género": res["data"]["genre"],
-            "Año": res["data"]["release_year"],
-            "Puntuación": res["data"]["rating"],
-            "Director": res["data"]["director"],
-            "Sinopsis": res["data"]["synopsis"],
-        }
-        st.write("### Detalles del film")
-        st.json(datos_es)
+                st.write("### Detalles del Film")
+                st.json(spanish_details)
+            else:
+                st.error(f"❌ Película no encontrada (ID: {film_id})")
+        except Exception as e:
+            st.error(f"⚠️ Error de conexión con el servidor: {e}")
 
-st.header("📊 Comparativa por Género")
-genre = st.selectbox(
-    "Selecciona un género para analizar",
-    [
-        "Acción",
-        "Drama",
-        "Comedia",
-        "Ciencia Ficción",
-        "Terror",
-        "Documental",
-        "Suspense",
-        "Aventura",
-    ],
+# --- SECTION 2: SEARCH BY GENRE ---
+st.header("📊 Análisis por Género")
+genres_list = [
+    "Acción",
+    "Drama",
+    "Comedia",
+    "Ciencia Ficción",
+    "Terror",
+    "Documental",
+    "Suspense",
+    "Aventura",
+]
+selected_genre = st.selectbox(
+    "Selecciona un género para filtrar la colección", genres_list
 )
 
-if st.button("Cargar Datos del Género"):
-    res = requests.get(f"http://app:8000/films/genre/{genre}").json()
-    st.write(f"**Origen de los datos:** {res['source']}")
+if st.button("Cargar Catálogo"):
+    try:
+        # Using Query Parameters as discussed: /films?genre=...
+        params = {"genre": selected_genre}
+        response = requests.get(f"{BACKEND_URL}/films", params=params)
 
-    # Preparamos el DataFrame con nombres de columna en español
-    df = pd.DataFrame(res["data"])
-    df.columns = [
-        "ID",
-        "Título",
-        "Género",
-        "Año de estreno",
-        "Puntuación",
-        "Director",
-        "Sinopsis",
-    ]
-    st.dataframe(df.head(10), use_container_width=True)
+        if response.status_code == 200:
+            res = response.json()
+            st.info(f"**Origen de los datos:** {res['source']}")
 
-    if "performance_history" not in st.session_state:
-        st.session_state.performance_history = []
+            # Prepare DataFrame for visualization
+            if res["data"]:
+                df = pd.DataFrame(res["data"])
+                # Rename columns for the user
+                df_display = df.rename(columns=LABEL_MAP)
 
-    st.session_state.performance_history.append(
-        {
-            "Origen": res["source"],
-            "Latencia (ms)": res["latency_ms"],
-            "Consulta Nº": len(st.session_state.performance_history) + 1,
-        }
-    )
+                st.dataframe(df_display.head(10), use_container_width=True)
 
-    fig = px.bar(
-        pd.DataFrame(st.session_state.performance_history),
-        x="Consulta Nº",
-        y="Latencia (ms)",
-        color="Origen",
-        title="Comparativa de Latencia en Tiempo Real",
-        labels={
-            "Latencia (ms)": "Milisegundos (ms)",
-            "Consulta Nº": "Número de Petición",
-        },
-    )
-    st.plotly_chart(fig, use_container_width=True)
+                # Performance tracking (Session State)
+                if "history" not in st.session_state:
+                    st.session_state.history = []
+
+                st.session_state.history.append(
+                    {
+                        "Consulta": len(st.session_state.history) + 1,
+                        "Latencia (ms)": res["latency_ms"],
+                        "Origen": "PostgreSQL (Miss)"
+                        if "PostgreSQL" in res["source"]
+                        else "Redis (Hit)",
+                    }
+                )
+
+                # Latency Chart
+                fig = px.line(
+                    pd.DataFrame(st.session_state.history),
+                    x="Consulta",
+                    y="Latencia (ms)",
+                    color="Origen",
+                    title="Evolución de Latencia por Consulta",
+                    markers=True,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No hay datos para este género.")
+        else:
+            st.error("Error al obtener datos del género.")
+    except Exception as e:
+        st.error(f"⚠️ Error de comunicación: {e}")
