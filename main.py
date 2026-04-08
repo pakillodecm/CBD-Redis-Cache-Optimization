@@ -57,6 +57,23 @@ class GenreEnum(str, Enum):
     adventure = "Aventura"
 
 
+def genre_key_to_db_value(genre_key: str | None) -> str | None:
+    if genre_key is None or str(genre_key).strip() == "":
+        return None
+
+    clean_key = str(genre_key).strip().lower()
+    if clean_key not in GenreEnum.__members__:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "msg": "Invalid genre key",
+                "allowed": list(GenreEnum.__members__.keys()),
+            },
+        )
+
+    return GenreEnum[clean_key].value
+
+
 class FilmSchema(BaseModel):
     title: str = Field(..., example="Interstellar")
     genre: GenreEnum
@@ -81,9 +98,14 @@ def clear_cache():
     return {"msg": "Cache purged successfully"}
 
 
+@app.get("/genres")
+def get_genres():
+    return {"data": {genre.name: genre.value for genre in GenreEnum}}
+
+
 @app.get("/films/stats")
 def get_film_stats(
-    genre: str = Query(None, description="Get aggregate stats by genre"),
+    genre: str | None = Query(None, description="Get aggregate stats by genre"),
 ):
     """
     Perform heavy aggregation logic on the database and cache the result.
@@ -91,8 +113,8 @@ def get_film_stats(
     """
     start_time = time.time()
 
-    # Normalize key specifically for stats
-    normalized_genre = normalize_key(genre)
+    genre_value = genre_key_to_db_value(genre)
+    normalized_genre = normalize_key(genre_value)
     cache_key = f"stats:{normalized_genre}"
 
     # 1. Cache lookup
@@ -115,7 +137,7 @@ def get_film_stats(
             FROM films
             WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre)
         """)
-        result = conn.execute(query, {"genre": genre}).fetchone()
+        result = conn.execute(query, {"genre": genre_value}).fetchone()
 
         # Build stats dictionary with English keys
         stats = {
@@ -250,7 +272,7 @@ def update_film(id: int, update: FilmUpdate):
             raise HTTPException(status_code=404, detail="Film not found")
 
         old_genre = old_data.genre
-        new_genre = update.genre
+        new_genre = update.genre.value
 
         # B. Update Database with new values
         update_query = text("""
@@ -263,7 +285,7 @@ def update_film(id: int, update: FilmUpdate):
             update_query,
             {
                 "title": update.title,
-                "genre": update.genre,
+                "genre": update.genre.value,
                 "year": update.release_year,
                 "rating": update.rating,
                 "director": update.director,
@@ -326,9 +348,10 @@ def delete_film(id: int):
 
 
 @app.get("/films")
-def get_films(genre: str = Query(None, description="Filter films by genre")):
+def get_films(genre: str | None = Query(None, description="Filter films by genre")):
     start_time = time.time()
-    cache_key = f"genre:{normalize_key(genre)}"
+    genre_value = genre_key_to_db_value(genre)
+    cache_key = f"genre:{normalize_key(genre_value)}"
 
     # 1. Try to retrieve from cache
     cached_data = cache.get(cache_key)
@@ -348,7 +371,7 @@ def get_films(genre: str = Query(None, description="Filter films by genre")):
             "WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre) "
             "LIMIT 500"
         )
-        results = conn.execute(query, {"genre": genre}).fetchall()
+        results = conn.execute(query, {"genre": genre_value}).fetchall()
 
         films = [
             {
