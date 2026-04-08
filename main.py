@@ -1,10 +1,11 @@
 import json
 import os
 import time
+import unicodedata
 from decimal import Decimal
 
 import redis
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from sqlalchemy import create_engine, text
 
 
@@ -34,13 +35,22 @@ engine = create_engine(DB_URL)
 cache = redis.Redis(host=REDIS_HOST, port=6379, db=0, decode_responses=True)
 
 
+def normalize_key(text: str) -> str:
+    if text is None or str(text).strip() == "":
+        return "all"
+    text_str = str(text)
+    normalized = unicodedata.normalize("NFKD", text_str)
+    clean_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return clean_text.lower().strip().replace(" ", "_")
+
+
 @app.get("/")
 def health_check():
     return {"status": "Ready", "infrastructure": "Dockerized"}
 
 
-@app.get("/film/{id}")
-def get_film(id: int):
+@app.get("/films/{id}")
+def get_film_by_id(id: int):
     start_time = time.time()
 
     # 1. Try to retrieve from cache
@@ -51,14 +61,16 @@ def get_film(id: int):
         execution_time = (time.time() - start_time) * 1000
         return {
             "data": json.loads(cached_data),
-            "source": "cache-memoria (Redis)",
+            "source": "Redis (Cache Hit)",
             "latency_ms": round(execution_time, 4),
         }
 
     # 2. If not in cache (Cache Miss), query the database
     with engine.connect() as conn:
         query = text(
-            "SELECT id, title, genre, release_year, rating, director, synopsis FROM films WHERE id = :id"
+            "SELECT id, title, genre, release_year, rating, director, synopsis "
+            "FROM films "
+            "WHERE id = :id"
         )
         result = conn.execute(query, {"id": id}).fetchone()
 
@@ -82,52 +94,58 @@ def get_film(id: int):
         execution_time = (time.time() - start_time) * 1000
         return {
             "data": film,
-            "source": "almacen-datos (PostgreSQL)",
+            "source": "PostgreSQL (Cache Miss)",
             "latency_ms": round(execution_time, 4),
         }
 
 
-@app.get("/films/genre/{genre}")
-def get_films_by_genre(genre: str):
+@app.get("/films")
+def get_films(genre: str = Query(None, description="Filter films by genre")):
     start_time = time.time()
-    cache_key = f"genre:{genre}"
+    cache_key = f"genre:{normalize_key(genre)}"
 
     # 1. Try to retrieve from cache
     cached_data = cache.get(cache_key)
     if cached_data:
+        execution_time = (time.time() - start_time) * 1000
         return {
             "data": json.loads(cached_data),
-            "source": "cache-memoria (Redis)",
-            "latency_ms": round((time.time() - start_time) * 1000, 4),
+            "source": "Redis (Cache Hit)",
+            "latency_ms": round(execution_time, 4),
         }
 
     # 2.  If not in cache, query the database
     with engine.connect() as conn:
         query = text(
-            "SELECT id, title, genre, release_year, rating, director, synopsis FROM films WHERE genre = :genre LIMIT 500"
+            "SELECT id, title, genre, release_year, rating, director, synopsis "
+            "FROM films "
+            "WHERE (:genre IS NULL OR genre ILIKE :genre) "
+            "LIMIT 500"
         )
         results = conn.execute(query, {"genre": genre}).fetchall()
 
         films = [
             {
-                "id": result[0],
-                "title": result[1],
-                "genre": result[2],
-                "release_year": result[3],
-                "rating": result[4],
-                "director": result[5],
-                "synopsis": result[6],
+                "id": r[0],
+                "title": r[1],
+                "genre": r[2],
+                "release_year": r[3],
+                "rating": r[4],
+                "director": r[5],
+                "synopsis": r[6],
             }
-            for result in results
+            for r in results
         ]
 
-        # 3. Save to cache
-        cache.setex(cache_key, 600, json.dumps(films))
+        # 3. Save to cache (only if result is not empty to avoid caching misses)
+        if films:
+            cache.setex(cache_key, 600, json.dumps(films))
 
+        execution_time = (time.time() - start_time) * 1000
         return {
             "data": films,
-            "source": "almacen-datos (PostgreSQL)",
-            "latency_ms": round((time.time() - start_time) * 1000, 4),
+            "source": "PostgreSQL (Cache Miss)",
+            "latency_ms": round(execution_time, 4),
         }
 
 
