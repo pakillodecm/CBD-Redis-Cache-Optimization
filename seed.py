@@ -13,12 +13,26 @@ DB_NAME = os.getenv("DB_NAME", "bd_proyecto_cbd")
 
 DB_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
 
-fake = Faker("es_ES")  # Data generator in spanish
+fake = Faker("es_ES")
+
+# --- DATA GENERATION CONFIG ---
+TOTAL_RECORDS = 100000
+BATCH_SIZE = 4000
+GENRES = [
+    "Acción",
+    "Drama",
+    "Comedia",
+    "Ciencia Ficción",
+    "Terror",
+    "Documental",
+    "Suspense",
+    "Aventura",
+]
 
 
+# --- SEEDING SCRIPT ---
 def seed():
     print(f"🚀 Conectando a {DB_HOST}...")
-    # Wait for DB to be ready (retry logic)
     engine = None
     for i in range(10):
         try:
@@ -53,30 +67,16 @@ def seed():
         conn.commit()
 
         print("🎬 Generando datos aleatorios con Faker...")
-        total_records = 100000
-        batch_size = 6250
 
-        genres = [
-            "Acción",
-            "Drama",
-            "Comedia",
-            "Ciencia Ficción",
-            "Terror",
-            "Documental",
-            "Suspense",
-            "Aventura",
-        ]
-
-        for i in range(0, total_records, batch_size):
+        for i in range(0, TOTAL_RECORDS, BATCH_SIZE):
             values = []
-            for _ in range(batch_size):
-                # Keep generated text raw and use parameterized SQL below.
+            for _ in range(BATCH_SIZE):
                 title = (
                     fake.sentence(nb_words=random.randint(2, 5))
                     .title()
                     .replace(".", "")
                 )
-                genre = random.choice(genres)
+                genre = random.choice(GENRES)
                 release_year = random.randint(1950, 2026)
                 rating = round(random.uniform(1.0, 10.0), 1)
                 director = fake.name()
@@ -100,7 +100,7 @@ def seed():
 
             conn.execute(query, values)
             conn.commit()
-            percentage_completed = ((i + batch_size) / total_records) * 100
+            percentage_completed = ((i + BATCH_SIZE) / TOTAL_RECORDS) * 100
             print(
                 f"\r🎲 Registrando películas... ({percentage_completed:.0f}%)",
                 end="",

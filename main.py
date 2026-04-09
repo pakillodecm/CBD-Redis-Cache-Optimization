@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 
-# Class for JSON to understand the Decimal types of the database
 class DecimalEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, Decimal):
@@ -31,7 +30,7 @@ async def telemetry_middleware(request: Request, call_next):
     return response
 
 
-# --- INFRASTRUCTURE CONFIG ---
+# --- CONFIG ---
 DB_HOST = os.getenv("DB_HOST", "almacen-datos")
 DB_USER = os.getenv("DB_USER", "user_cbd")
 DB_PASS = os.getenv("DB_PASS", "password_cbd")
@@ -40,17 +39,19 @@ REDIS_HOST = os.getenv("REDIS_HOST", "cache-memoria")
 
 DB_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
 
-# Security delay to allow Docker services to stabilize
 time.sleep(5)
 
 engine = create_engine(DB_URL)
 cache = redis.Redis(host=REDIS_HOST, port=6379, db=0, decode_responses=True)
 
+MAX_SEARCH_LIMIT = 3125
+CACHE_TTL_SHORT = 300
+CACHE_TTL_LONG = 600
+
 
 def invalidate_caches(
     film_id: int | None, old_genre: str | None, new_genre: str | None = None
 ):
-    """Purga todas las cachés afectadas en segundo plano."""
     if film_id:
         cache.delete(f"film:{film_id}")
 
@@ -81,6 +82,7 @@ def normalize_key(text: str) -> str:
     return clean_text.lower().strip().replace(" ", "_")
 
 
+# --- SCHEMAS ---
 class GenreEnum(str, Enum):
     action = "Acción"
     drama = "Drama"
@@ -92,6 +94,20 @@ class GenreEnum(str, Enum):
     adventure = "Aventura"
 
 
+class FilmSchema(BaseModel):
+    title: str = Field(..., example="Interstellar")
+    genre: GenreEnum
+    release_year: int = Field(..., gt=1888, le=2026)
+    rating: float = Field(..., ge=0, le=10)
+    director: str
+    synopsis: str
+
+
+FilmCreate = FilmSchema
+FilmUpdate = FilmSchema
+
+
+# --- HELPERS ---
 def genre_key_to_db_value(genre_key: str | None) -> str | None:
     if genre_key is None or str(genre_key).strip() == "":
         return None
@@ -109,24 +125,7 @@ def genre_key_to_db_value(genre_key: str | None) -> str | None:
     return GenreEnum[clean_key].value
 
 
-class FilmSchema(BaseModel):
-    title: str = Field(..., example="Interstellar")
-    genre: GenreEnum
-    release_year: int = Field(..., gt=1888, le=2026)
-    rating: float = Field(..., ge=0, le=10)
-    director: str
-    synopsis: str
-
-
-FilmCreate = FilmSchema
-FilmUpdate = FilmSchema
-
-
-@app.get("/")
-def health_check():
-    return {"status": "Ready", "infrastructure": "Dockerized"}
-
-
+# --- ROUTES ---
 @app.get("/clear-cache")
 def clear_cache():
     cache.flushall()
@@ -142,15 +141,10 @@ def get_genres():
 def get_genre_stats(
     genre: str | None = Query(None, description="Get aggregate stats by genre"),
 ):
-    """
-    Perform heavy aggregation logic on the database and cache the result.
-    Demonstrates CPU-saving via Cache-Aside.
-    """
     genre_value = genre_key_to_db_value(genre)
     normalized_genre = normalize_key(genre_value)
     cache_key = f"stats:{normalized_genre}"
 
-    # 1. Cache lookup
     cached_stats = cache.get(cache_key)
     if cached_stats:
         return {
@@ -158,7 +152,6 @@ def get_genre_stats(
             "source": "Redis (Cache Hit)",
         }
 
-    # 2. Heavy SQL Aggregation
     with engine.connect() as conn:
         query = text("""
             SELECT 
@@ -171,7 +164,6 @@ def get_genre_stats(
         """)
         result = conn.execute(query, {"genre": genre_value}).fetchone()
 
-        # Build stats dictionary with English keys
         stats = {
             "total_count": result[0],
             "avg_rating": round(float(result[1]), 2) if result[1] else 0,
@@ -179,8 +171,7 @@ def get_genre_stats(
             "newest_year": result[3],
         }
 
-        # 3. Store in cache (Cache-Aside)
-        cache.setex(cache_key, 600, json.dumps(stats, cls=DecimalEncoder))
+        cache.setex(cache_key, CACHE_TTL_LONG, json.dumps(stats, cls=DecimalEncoder))
 
         return {
             "data": stats,
@@ -204,20 +195,18 @@ def search_films(
 
     with engine.connect() as conn:
         if not clean_q:
-            # If no query, return all films
             query = text(
-                "SELECT id, title, genre, release_year, rating, director, synopsis "
-                "FROM films "
-                "LIMIT 3125"
+                f"SELECT id, title, genre, release_year, rating, director, synopsis "
+                f"FROM films "
+                f"LIMIT {MAX_SEARCH_LIMIT}"
             )
             results = conn.execute(query).fetchall()
         else:
-            # Search in title, synopsis and director
             query = text(
-                "SELECT id, title, genre, release_year, rating, director, synopsis "
-                "FROM films "
-                "WHERE title ILIKE :term OR director ILIKE :term OR synopsis ILIKE :term "
-                "LIMIT 3125"
+                f"SELECT id, title, genre, release_year, rating, director, synopsis "
+                f"FROM films "
+                f"WHERE title ILIKE :term OR director ILIKE :term OR synopsis ILIKE :term "
+                f"LIMIT {MAX_SEARCH_LIMIT}"
             )
             results = conn.execute(query, {"term": f"%{clean_q}%"}).fetchall()
 
@@ -234,7 +223,7 @@ def search_films(
             for r in results
         ]
 
-        cache.setex(cache_key, 300, json.dumps(films, cls=DecimalEncoder))
+        cache.setex(cache_key, CACHE_TTL_SHORT, json.dumps(films, cls=DecimalEncoder))
 
         return {
             "data": films,
@@ -245,7 +234,6 @@ def search_films(
 @app.post("/films")
 def create_film(film: FilmCreate, background_tasks: BackgroundTasks):
     with engine.connect() as conn:
-        # We use .value to get the string from the Enum
         query = text("""
             INSERT INTO films (title, genre, release_year, rating, director, synopsis)
             VALUES (:title, :genre, :year, :rating, :director, :synopsis)
@@ -275,7 +263,6 @@ def create_film(film: FilmCreate, background_tasks: BackgroundTasks):
 
 @app.get("/films/{id}")
 def get_film_by_id(id: int):
-    # 1. Try to retrieve from cache
     cache_key = f"film:{id}"
     cached_data = cache.get(cache_key)
 
@@ -285,7 +272,6 @@ def get_film_by_id(id: int):
             "source": "Redis (Cache Hit)",
         }
 
-    # 2. If not in cache (Cache Miss), query the database
     with engine.connect() as conn:
         query = text(
             "SELECT id, title, genre, release_year, rating, director, synopsis "
@@ -307,9 +293,7 @@ def get_film_by_id(id: int):
             "synopsis": result[6],
         }
 
-        # 3. Save to cache for future requests (Cache-Aside)
-        # Using DecimalEncoder to handle Decimal types when serializing
-        cache.setex(cache_key, 600, json.dumps(film, cls=DecimalEncoder))
+        cache.setex(cache_key, CACHE_TTL_LONG, json.dumps(film, cls=DecimalEncoder))
 
         return {
             "data": film,
@@ -319,12 +303,7 @@ def get_film_by_id(id: int):
 
 @app.put("/films/{id}")
 def update_film(id: int, update: FilmUpdate, background_tasks: BackgroundTasks):
-    """
-    Full update of a film.
-    Handles 'Cross-Genre' cache invalidation if the genre changes.
-    """
     with engine.connect() as conn:
-        # A. Fetch OLD data before updating (to know what to clean)
         old_data = conn.execute(
             text("SELECT genre FROM films WHERE id = :id"), {"id": id}
         ).fetchone()
@@ -335,7 +314,6 @@ def update_film(id: int, update: FilmUpdate, background_tasks: BackgroundTasks):
         old_genre = old_data.genre
         new_genre = update.genre.value
 
-        # B. Update Database with new values
         update_query = text("""
             UPDATE films SET 
                 title = :title, genre = :genre, release_year = :year, 
@@ -367,7 +345,6 @@ def update_film(id: int, update: FilmUpdate, background_tasks: BackgroundTasks):
 @app.delete("/films/{id}")
 def delete_film(id: int, background_tasks: BackgroundTasks):
     with engine.connect() as conn:
-        # Using mappings() to avoid the [0] index and use keys instead
         row = (
             conn.execute(text("SELECT genre FROM films WHERE id = :id"), {"id": id})
             .mappings()
@@ -377,7 +354,7 @@ def delete_film(id: int, background_tasks: BackgroundTasks):
         if not row:
             raise HTTPException(status_code=404, detail="Film not found")
 
-        genre = row["genre"]  # Clean access via key
+        genre = row["genre"]
         conn.execute(text("DELETE FROM films WHERE id = :id"), {"id": id})
         conn.commit()
 
@@ -393,7 +370,6 @@ def get_films(genre: str | None = Query(None, description="Filter films by genre
     genre_value = genre_key_to_db_value(genre)
     cache_key = f"genre:{normalize_key(genre_value)}"
 
-    # 1. Try to retrieve from cache
     cached_data = cache.get(cache_key)
     if cached_data:
         return {
@@ -401,13 +377,12 @@ def get_films(genre: str | None = Query(None, description="Filter films by genre
             "source": "Redis (Cache Hit)",
         }
 
-    # 2.  If not in cache, query the database
     with engine.connect() as conn:
         query = text(
-            "SELECT id, title, genre, release_year, rating, director, synopsis "
-            "FROM films "
-            "WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre) "
-            "LIMIT 3125"
+            f"SELECT id, title, genre, release_year, rating, director, synopsis "
+            f"FROM films "
+            f"WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre) "
+            f"LIMIT {MAX_SEARCH_LIMIT}"
         )
         results = conn.execute(query, {"genre": genre_value}).fetchall()
 
@@ -424,9 +399,10 @@ def get_films(genre: str | None = Query(None, description="Filter films by genre
             for r in results
         ]
 
-        # 3. Save to cache (only if result is not empty to avoid caching misses)
         if films:
-            cache.setex(cache_key, 600, json.dumps(films, cls=DecimalEncoder))
+            cache.setex(
+                cache_key, CACHE_TTL_LONG, json.dumps(films, cls=DecimalEncoder)
+            )
 
         return {
             "data": films,
