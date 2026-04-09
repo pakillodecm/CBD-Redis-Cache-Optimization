@@ -3,581 +3,455 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-# --- CONFIG ---
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="CBD Panel - Optimización", layout="wide")
 BACKEND_URL = "http://app:8000"
 
-LABEL_MAP = {
-    "id": "ID",
-    "title": "Título",
-    "genre": "Género",
-    "release_year": "Año",
-    "rating": "Rating",
-    "director": "Director",
-    "synopsis": "Sinopsis",
-}
+# --- UTILIDADES Y ESTADO ---
+if "telemetry" not in st.session_state:
+    st.session_state.telemetry = []
+if "edit_film" not in st.session_state:
+    st.session_state.edit_film = None
+if "execute_delete_for_id" not in st.session_state:
+    st.session_state.execute_delete_for_id = None
 
 
-# --- HELPERS ---
+@st.cache_data(show_spinner=False)
 def get_genre_map():
-    """Fetch available genres from backend."""
     try:
         response = requests.get(f"{BACKEND_URL}/genres")
         if response.status_code == 200:
             return response.json().get("data", {})
-    except:
-        pass
-    return {}
+    except Exception:
+        return {}
 
 
-def clear_redis_cache():
-    """Clear all Redis cache."""
-    try:
-        response = requests.get(f"{BACKEND_URL}/clear-cache")
-        return response.status_code == 200
-    except:
-        return False
+def log_telemetry(query_type: str, source: str, latency: float):
+    source_clean = "Redis (Caché)" if "Redis" in source else "PostgreSQL (DB)"
+    st.session_state.telemetry.append(
+        {
+            "Tipo de Consulta": query_type,
+            "Origen": source_clean,
+            "Latencia (ms)": float(latency),
+        }
+    )
 
 
-def get_performance_tag(source: str):
-    """Display performance badge based on source."""
+# --- COMPONENTES VISUALES ---
+def display_performance_tag(source: str, latency: str):
     if "Redis" in source:
-        st.success("🚀 Recuperado de Memoria (Instantáneo)")
+        st.success(f"🚀 **{latency} ms** | Respuesta Instantánea (Caché Hit)")
     else:
-        st.warning("⏳ Consultando Base de Datos (Procesamiento)")
+        st.warning(f"⏳ **{latency} ms** | Procesamiento en BD (Caché Miss)")
 
 
-def display_film(film: dict, latency_ms: str, source: str):
-    """Display a film card with improved design."""
-    is_cache = "Redis" in source
-    badge_color = "✅" if is_cache else "⚙️"
-
+def display_ultra_minimal_card(film: dict):
+    """Card ultra-compacta para listados (2 por fila)"""
     with st.container(border=True):
-        # Title + Latency badge
-        col_title, col_latency = st.columns([0.8, 0.2])
-        with col_title:
-            st.markdown(f"### {film['title']}")
-        with col_latency:
-            st.markdown(f"**{latency_ms} ms** {badge_color}")
-
-        # Director, Year, Rating
         st.markdown(
-            f"**{film['director']}** • {film['release_year']} • ⭐ {film['rating']}"
+            f"**{film['title']}** ({film['release_year']})  |  {film['genre']}\n\n"
+            f"⭐ {film['rating']}  |  🎥 {film['director']}"
         )
 
-        # Genre
-        st.caption(f"📁 {film['genre']}")
 
-        # Synopsis
-        synopsis_text = film["synopsis"]
-        if len(synopsis_text) > 180:
-            synopsis_text = synopsis_text[:177] + "..."
-        st.markdown(f"*{synopsis_text}*")
-
-
-# --- PAGE SETUP ---
-st.set_page_config(page_title="Film Database - Telemetry", layout="wide")
-st.title("🎬 Film Database")
-st.markdown("""
-    **Advanced Search • Real-Time Telemetry • Cache Performance Visualization**
-    
-    Experience the power of Redis caching. Every query is tracked and compared to database performance.
-""")
-st.divider()
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("☁️ Cache Management")
-    st.markdown("Control and monitor Redis cache behavior.")
-
-    if st.button("🧹 Clear All Cache", use_container_width=True, type="primary"):
-        if clear_redis_cache():
-            st.success("✅ Cache cleared successfully")
-        else:
-            st.error("❌ Failed to clear cache")
-
-    st.divider()
-    st.caption("**📊 About Latency**")
-    st.caption(
-        "Latency measures total time: backend processing + database/cache access."
-    )
-
-    st.divider()
-    st.markdown("### 🚀 How it works")
-    st.markdown("""
-    - **First Query**: Database lookup (slow)
-    - **Next Queries**: Cache hit (fast)
-    - **Visual Proof**: See the difference in the chart
-    """)
-
-
-# Initialize session state for telemetry tracking
-if "telemetry" not in st.session_state:
-    st.session_state.telemetry = []
-
-# Initialize session state for Update tab
-if "update_film_data" not in st.session_state:
-    st.session_state.update_film_data = None
-
-
-# --- MAIN: UNIFIED SEARCH (READ) ---
-st.header("🔍 Search Films")
-st.markdown("Find films by ID, keyword, or genre. Watch how Redis caches results.")
-
-search_mode = st.radio("Search by:", ["ID", "Text", "Genre"], horizontal=True)
-
-if search_mode == "ID":
-    film_id = st.number_input("Film ID", min_value=1, step=1, value=1)
-    if st.button("Search by ID", use_container_width=True):
-        try:
-            response = requests.get(f"{BACKEND_URL}/films/{film_id}")
-            if response.status_code == 200:
-                latency = response.headers.get("X-Process-Time", "0")
-                source = response.json()["source"]
-                film = response.json()["data"]
-
-                # Track telemetry
-                is_cache = "Redis" in source
-                st.session_state.telemetry.append(
-                    {
-                        "Query": len(st.session_state.telemetry) + 1,
-                        "Source": "Cache" if is_cache else "Database",
-                        "Latency": float(latency),
-                    }
+def display_detailed_card(film: dict, source: str, latency: str):
+    """Card detallada para búsqueda por ID con latencia visible"""
+    with st.container(border=True):
+        c1, c2 = st.columns([0.85, 0.15])
+        with c1:
+            st.markdown(f"## 🎬 {film['title']}")
+        with c2:
+            if "Redis" in source:
+                st.markdown(
+                    f"<div style='text-align: right; color: #10b981; font-weight: bold;'>⚡ {latency} ms</div>",
+                    unsafe_allow_html=True,
                 )
-
-                get_performance_tag(source)
-                display_film(film, latency, source)
             else:
-                st.error(f"❌ Film {film_id} not found")
-        except Exception as e:
-            st.error(f"❌ Connection error: {e}")
-
-elif search_mode == "Text":
-    search_query = st.text_input(
-        "Search in title or synopsis", placeholder="e.g., space, love, mystery"
-    )
-    if st.button("Search by Text", use_container_width=True):
-        if not search_query.strip():
-            st.warning("Enter a search term")
-        else:
-            try:
-                response = requests.get(
-                    f"{BACKEND_URL}/films/search", params={"q": search_query}
+                st.markdown(
+                    f"<div style='text-align: right; color: #f59e0b; font-weight: bold;'>💾 {latency} ms</div>",
+                    unsafe_allow_html=True,
                 )
-                if response.status_code == 200:
-                    latency = response.headers.get("X-Process-Time", "0")
-                    source = response.json()["source"]
-                    films = response.json()["data"]
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Año", film["release_year"])
+        col2.metric("Puntuación", f"⭐ {film['rating']}")
+        col3.metric("Género", film["genre"])
+        st.markdown(f"**Director:** {film['director']}")
+        st.markdown(f"**Sinopsis:** {film['synopsis']}")
 
-                    # Track telemetry
-                    is_cache = "Redis" in source
-                    st.session_state.telemetry.append(
-                        {
-                            "Query": len(st.session_state.telemetry) + 1,
-                            "Source": "Cache" if is_cache else "Database",
-                            "Latency": float(latency),
-                        }
+
+@st.dialog("⚠️ Confirmar Borrado")
+def confirm_delete_dialog(film_id):
+    st.write(f"Vas a eliminar permanentemente la película con ID **{film_id}**.")
+    st.warning("Esta acción no se puede deshacer.")
+    c1, c2 = st.columns(2)
+    if c1.button("Cancelar", use_container_width=True):
+        st.rerun()
+    if c2.button("Confirmar", type="primary", use_container_width=True):
+        st.session_state.execute_delete_for_id = film_id
+        st.rerun()
+
+
+# --- INTERFAZ PRINCIPAL ---
+st.title("Sistema de Gestión de Catálogo")
+
+# Sidebar compacta
+with st.sidebar:
+    st.header("⚙️ Infraestructura")
+    if st.button("🧹 Purgar Caché Redis", use_container_width=True):
+        try:
+            res = requests.get(f"{BACKEND_URL}/clear-cache")
+            if res.status_code == 200:
+                st.success("Caché limpia.")
+            else:
+                st.error("Error al limpiar caché.")
+        except Exception:
+            st.error(f"Error del Backend ({res.status_code}): {res.text}")
+    if st.button("🗑️ Limpiar Telemetría", use_container_width=True):
+        st.session_state.telemetry = []
+        st.success("Historial de telemetría reestablecido.")
+
+# --- TABS PRINCIPALES ---
+tab_explore, tab_manage, tab_telemetry = st.tabs(
+    ["🔍 Explorar", "🛠️ Gestión (CUD)", "📈 Telemetría"]
+)
+
+# ==========================================
+# TAB 1: EXPLORAR (LECTURA COMPACTA)
+# ==========================================
+with tab_explore:
+    search_type = st.radio(
+        "Método:",
+        ["ID", "Texto", "Género"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    # Input y botón en la misma línea
+    col_input, col_btn = st.columns([3, 1])
+
+    if search_type == "ID":
+        f_id = col_input.number_input(
+            "ID", min_value=1, value=100, label_visibility="collapsed"
+        )
+        if col_btn.button("🔍 Buscar ID", use_container_width=True):
+            res = requests.get(f"{BACKEND_URL}/films/{f_id}")
+            if res.status_code == 200:
+                data = res.json()
+                lat = res.headers.get("X-Process-Time", "0")
+                display_performance_tag(data["source"], lat)
+                display_detailed_card(data["data"], data["source"], lat)
+                log_telemetry("ID", data["source"], lat)
+            else:
+                st.error("No existe ninguna película con ese ID.")
+
+    elif search_type == "Texto":
+        q = col_input.text_input(
+            "Buscar...",
+            label_visibility="collapsed",
+            placeholder="Ej.: agua, aire, mar...",
+        )
+        if col_btn.button("🔍 Buscar Texto", use_container_width=True):
+            res = requests.get(f"{BACKEND_URL}/films/search", params={"q": q})
+            if res.status_code == 200:
+                data = res.json()
+                lat = res.headers.get("X-Process-Time", "0")
+                display_performance_tag(data["source"], lat)
+
+                if q.strip():
+                    st.markdown(
+                        f"#### Coincidencias de '{q}' en título, director o sinopsis: {len(data['data'])}"
                     )
-
-                    st.info(f"🔍 Found {len(films)} result(s) in {latency}ms")
-                    get_performance_tag(source)
-
-                    for film in films:
-                        display_film(film, latency, source)
                 else:
-                    st.error("❌ Search failed")
-            except Exception as e:
-                st.error(f"❌ Connection error: {e}")
+                    st.markdown(f"#### Películas disponibles: {len(data['data'])}")
 
-elif search_mode == "Genre":
-    try:
+                films_list = data["data"][:10]
+                cols = st.columns(2)
+                for idx, film in enumerate(films_list):
+                    with cols[idx % 2]:
+                        display_ultra_minimal_card(film)
+
+                if len(data["data"]) > 10:
+                    st.caption(f"👀 *... y {len(data['data']) - 10:,} películas más.*")
+
+                log_telemetry("Texto", data["source"], lat)
+            else:
+                st.error(f"Error del Backend ({res.status_code}): {res.text}")
+
+    elif search_type == "Género":
         genre_map = get_genre_map()
-        if genre_map:
-            genre_labels = list(genre_map.values())
-            selected_label = st.selectbox("Select genre", genre_labels)
+        selected_label = col_input.selectbox(
+            "Género",
+            list(genre_map.values()) if genre_map else [],
+            label_visibility="collapsed",
+        )
+        if col_btn.button("🔍 Buscar Género", use_container_width=True) and genre_map:
             selected_key = next(k for k, v in genre_map.items() if v == selected_label)
 
-            if st.button("Filter by Genre", use_container_width=True):
-                try:
-                    response = requests.get(
-                        f"{BACKEND_URL}/films", params={"genre": selected_key}
-                    )
-                    if response.status_code == 200:
-                        latency = response.headers.get("X-Process-Time", "0")
-                        source = response.json()["source"]
-                        films = response.json()["data"]
+            # 1. Petición pesada de agregación (Stats)
+            res_stats = requests.get(
+                f"{BACKEND_URL}/films/stats", params={"genre": selected_key}
+            )
+            # 2. Petición de lista de películas
+            res_films = requests.get(
+                f"{BACKEND_URL}/films", params={"genre": selected_key}
+            )
 
-                        # Track telemetry
-                        is_cache = "Redis" in source
-                        st.session_state.telemetry.append(
-                            {
-                                "Query": len(st.session_state.telemetry) + 1,
-                                "Source": "Cache" if is_cache else "Database",
-                                "Latency": float(latency),
-                            }
-                        )
+            if res_stats.status_code == 200 and res_films.status_code == 200:
+                # Datos de Stats
+                s_data = res_stats.json()
+                s_lat = res_stats.headers.get("X-Process-Time", "0")
 
-                        st.info(f"📽️ Found {len(films)} film(s) in {latency}ms")
-                        get_performance_tag(source)
+                # Datos de Films
+                f_data = res_films.json()
+                f_lat = res_films.headers.get("X-Process-Time", "0")
 
-                        for film in films[:10]:  # Show first 10
-                            display_film(film, latency, source)
-                        if len(films) > 10:
-                            st.caption(f"... y {len(films) - 10} películas más")
-                    else:
-                        st.error("❌ Genre search failed")
-                except Exception as e:
-                    st.error(f"❌ Connection error: {e}")
-        else:
-            st.error("❌ Could not load genres")
-    except Exception as e:
-        st.error(f"❌ Genre error: {e}")
+                display_performance_tag(s_data["source"], s_lat)
 
-st.divider()
-
-# --- MAIN: PERFORMANCE VISUALIZATION ---
-st.header("Cache Performance Evolution")
-
-if len(st.session_state.telemetry) >= 2:
-    df_telemetry = pd.DataFrame(st.session_state.telemetry)
-
-    # Create line chart showing latency evolution
-    fig = px.line(
-        df_telemetry,
-        x="Query",
-        y="Latency",
-        color="Source",
-        markers=True,
-        color_discrete_map={"Cache": "#00AA00", "Database": "#FF9900"},
-        title="Latency Evolution Over Queries",
-        labels={"Query": "Query Number", "Latency": "Latency (ms)"},
-        height=350,
-    )
-
-    fig.update_traces(line=dict(width=2), marker=dict(size=8))
-    fig.update_layout(hovermode="x unified", showlegend=True)
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Queries", len(st.session_state.telemetry))
-
-    cache_data = df_telemetry[df_telemetry["Source"] == "Cache"]
-    db_data = df_telemetry[df_telemetry["Source"] == "Database"]
-
-    with col2:
-        if len(cache_data) > 0:
-            avg_cache = cache_data["Latency"].mean()
-            st.metric("🚀 Avg Cache", f"{avg_cache:.2f}ms")
-        else:
-            st.metric("🚀 Avg Cache", "—")
-
-    with col3:
-        if len(db_data) > 0:
-            avg_db = db_data["Latency"].mean()
-            st.metric("⏳ Avg Database", f"{avg_db:.2f}ms")
-        else:
-            st.metric("⏳ Avg Database", "—")
-
-    with col4:
-        if len(cache_data) > 0 and len(db_data) > 0:
-            speedup = db_data["Latency"].mean() / cache_data["Latency"].mean()
-            st.metric("⚡ Speedup", f"{speedup:.1f}x")
-        else:
-            st.metric("⚡ Speedup", "—")
-else:
-    st.info("💡 Perform searches to visualize cache performance")
-
-st.divider()
-
-# --- EXPANDABLE: CREATE / UPDATE / DELETE ---
-with st.expander("🎬 Manage Films (Create/Update/Delete)", expanded=False):
-    tab1, tab2, tab3 = st.tabs(["Create", "Update", "Delete"])
-
-    # CREATE
-    with tab1:
-        st.subheader("Create New Film")
-
-        try:
-            genre_map = get_genre_map()
-            if genre_map:
-                genre_labels = list(genre_map.values())
-                genre_key_to_label = {v: k for k, v in genre_map.items()}
-
-                # Compact form layout
-                col1, col2 = st.columns(2)
-                with col1:
-                    title = st.text_input("Title")
-                    genre_label = st.selectbox(
-                        "Genre", genre_labels, key="create_genre"
-                    )
-                    director = st.text_input("Director")
-
-                with col2:
-                    year = st.number_input(
-                        "Release Year", min_value=1888, max_value=2026, value=2025
-                    )
-                    rating = st.slider("Rating", 0.0, 10.0, 5.0)
-
-                synopsis = st.text_area("Synopsis", height=80)
-
-                if st.button("✨ Create Film", use_container_width=True):
-                    if not all([title, director, synopsis]):
-                        st.warning("📋 Fill all fields")
-                    else:
-                        try:
-                            response = requests.post(
-                                f"{BACKEND_URL}/films",
-                                json={
-                                    "title": title,
-                                    "genre": genre_key_to_label[genre_label],
-                                    "release_year": year,
-                                    "rating": rating,
-                                    "director": director,
-                                    "synopsis": synopsis,
-                                },
-                            )
-                            if response.status_code == 200:
-                                film_id = response.json()["id"]
-                                st.success(f"✅ Film created with ID {film_id}")
-                                st.toast(
-                                    "🗑️ Cache: Genre & stats invalidated",
-                                    icon="⚡",
-                                )
-                            else:
-                                st.error("❌ Creation failed")
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
-            else:
-                st.error("❌ Could not load genres")
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-
-    # UPDATE
-    with tab2:
-        st.subheader("Update Film")
-
-        try:
-            genre_map = get_genre_map()
-            if genre_map:
-                genre_labels = list(genre_map.values())
-                genre_key_to_label = {v: k for k, v in genre_map.items()}
-
-                col_id1, col_id2 = st.columns([0.7, 0.3])
-                with col_id1:
-                    update_id = st.number_input(
-                        "Film ID to Update", min_value=1, step=1, key="update_id"
-                    )
-
-                with col_id2:
-                    if st.button("🔍 Load", use_container_width=True):
-                        try:
-                            response = requests.get(f"{BACKEND_URL}/films/{update_id}")
-                            if response.status_code == 200:
-                                film_data = response.json()["data"]
-                                st.session_state.update_film_data = film_data
-                                st.success(f"✅ Loaded: {film_data['title']}")
-                            else:
-                                st.error(f"❌ Film {update_id} not found")
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
+                # Métricas compactas en una línea
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                total_films = s_data["data"]["total_count"]
+                sc1.metric("Películas", total_films)
+                sc2.metric("Nota Media", s_data["data"]["avg_rating"])
+                sc3.metric("Primer estreno", s_data["data"]["oldest_year"])
+                sc4.metric("Último Estreno", s_data["data"]["newest_year"])
 
                 st.divider()
+                st.markdown(f"#### Muestra del catálogo: {selected_label}")
 
-                # Get values from session state or use defaults
-                current_data = st.session_state.update_film_data
+                # Mostrar las películas en 2 columnas
+                films_list = f_data["data"]
+                cols = st.columns(2)
+                for idx, film in enumerate(films_list[:10]):
+                    with cols[idx % 2]:
+                        display_ultra_minimal_card(film)
 
-                # Compact form layout
-                col1, col2 = st.columns(2)
-                with col1:
-                    title = st.text_input(
-                        "Title",
-                        value=current_data["title"] if current_data else "",
-                        key="update_title",
-                    )
-                    genre_current = (
-                        current_data["genre"] if current_data else genre_labels[0]
-                    )
-                    genre_index = (
-                        genre_labels.index(genre_current)
-                        if genre_current in genre_labels
-                        else 0
-                    )
-                    genre_label = st.selectbox(
-                        "Genre", genre_labels, index=genre_index, key="update_genre"
-                    )
-                    director = st.text_input(
-                        "Director",
-                        value=current_data["director"] if current_data else "",
-                        key="update_director",
-                    )
+                # Mostrar el texto de "... y X más"
+                if total_films > 10:
+                    st.caption(f"👀 *... y {total_films - 10:,} películas más.*")
 
-                with col2:
-                    year = st.number_input(
-                        "Year",
-                        min_value=1888,
-                        max_value=2026,
-                        value=current_data["release_year"] if current_data else 2025,
-                        key="update_year",
-                    )
-                    rating = st.slider(
-                        "Rating",
-                        0.0,
-                        10.0,
-                        value=current_data["rating"] if current_data else 5.0,
-                        key="update_rating",
-                    )
-
-                synopsis = st.text_area(
-                    "Synopsis",
-                    value=current_data["synopsis"] if current_data else "",
-                    height=80,
-                    key="update_synopsis",
-                )
-
-                if st.button("💾 Update Film", use_container_width=True):
-                    if not all([title, director, synopsis]):
-                        st.warning("📋 Fill all fields")
-                    else:
-                        try:
-                            response = requests.put(
-                                f"{BACKEND_URL}/films/{update_id}",
-                                json={
-                                    "title": title,
-                                    "genre": genre_key_to_label[genre_label],
-                                    "release_year": year,
-                                    "rating": rating,
-                                    "director": director,
-                                    "synopsis": synopsis,
-                                },
-                            )
-                            if response.status_code == 200:
-                                genre_changed = response.json().get(
-                                    "genre_changed", False
-                                )
-                                st.success("✅ Film updated")
-
-                                if genre_changed:
-                                    st.toast(
-                                        "🗑️ Cache: Old & new genre invalidated",
-                                        icon="⚡",
-                                    )
-                                else:
-                                    st.toast("🗑️ Cache: Global invalidated", icon="⚡")
-
-                                st.session_state.update_film_data = None
-                            else:
-                                st.error("❌ Update failed")
-                        except Exception as e:
-                            st.error(f"❌ Error: {e}")
+                # Registramos ambas operaciones en la telemetría para el gráfico
+                log_telemetry("Stats", s_data["source"], s_lat)
+                log_telemetry("Lista Género", f_data["source"], f_lat)
             else:
-                st.error("❌ Could not load genres")
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+                st.error(f"Error del Backend ({res.status_code}): {res.text}")
 
-    # DELETE
-    with tab3:
-        st.subheader("Delete Film")
+# ==========================================
+# TAB 2: GESTIÓN (FORMULARIOS COMPACTOS)
+# ==========================================
+with tab_manage:
+    st.caption(
+        "Cualquier escritura aquí invalidará automáticamente las cachés globales en Redis."
+    )
+    t_create, t_update, t_delete = st.tabs(["Crear", "Actualizar", "Eliminar"])
 
-        col_del1, col_del2 = st.columns([0.7, 0.3])
-        with col_del1:
-            delete_id = st.number_input(
-                "Film ID to Delete", min_value=1, step=1, key="delete_id"
-            )
-
-        with col_del2:
-            if st.button("🗑️ Delete", use_container_width=True, type="secondary"):
-                try:
-                    response = requests.delete(f"{BACKEND_URL}/films/{delete_id}")
-                    if response.status_code == 200:
-                        st.success("✅ Film deleted")
-                        st.toast("🗑️ Cache: All invalidated", icon="⚡")
-                    else:
-                        st.error("❌ Deletion failed")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-
-st.divider()
-
-# --- EXPANDABLE: ADVANCED FEATURES ---
-with st.expander("⚙️ Advanced Features", expanded=False):
-    col_adv1, col_adv2 = st.columns(2)
-
-    with col_adv1:
-        st.subheader("📊 Aggregate Statistics")
-        try:
+    # --- CREAR ---
+    with t_create:
+        with st.form("form_create", border=False):
             genre_map = get_genre_map()
-            if genre_map:
-                genre_labels = list(genre_map.values())
-                selected_label = st.selectbox(
-                    "Select genre", genre_labels, key="stats_genre"
-                )
-                selected_key = next(
-                    k for k, v in genre_map.items() if v == selected_label
-                )
+            c1, c2, c3 = st.columns([2, 1, 1])
+            c_title = c1.text_input("Título")
+            c_genre = c2.selectbox(
+                "Género", list(genre_map.values()) if genre_map else []
+            )
+            c_year = c3.number_input("Año", 1888, 2030, 2024)
 
-                if st.button("📈 Load Stats", use_container_width=True):
-                    try:
-                        response = requests.get(
-                            f"{BACKEND_URL}/films/stats", params={"genre": selected_key}
-                        )
-                        if response.status_code == 200:
-                            latency = response.headers.get("X-Process-Time", "0")
-                            source = response.json()["source"]
-                            stats = response.json()["data"]
+            c4, c5 = st.columns([2, 1])
+            c_director = c4.text_input("Director")
+            c_rating = c5.slider("Puntuación", 0.0, 10.0, 5.0)
 
-                            # Track telemetry
-                            is_cache = "Redis" in source
-                            st.session_state.telemetry.append(
-                                {
-                                    "Query": len(st.session_state.telemetry) + 1,
-                                    "Source": "Cache" if is_cache else "Database",
-                                    "Latency": float(latency),
-                                }
-                            )
+            c_synopsis = st.text_area("Sinopsis", height=80)
 
-                            get_performance_tag(source)
+            if st.form_submit_button("➕ Crear Película", type="primary"):
+                if (
+                    c_title.strip()
+                    and c_genre
+                    and c_year
+                    and c_rating
+                    and c_director.strip()
+                    and c_synopsis.strip()
+                ):
+                    payload = {
+                        "title": c_title.strip(),
+                        "genre": c_genre,
+                        "release_year": c_year,
+                        "rating": c_rating,
+                        "director": c_director.strip(),
+                        "synopsis": c_synopsis.strip(),
+                    }
+                    res = requests.post(f"{BACKEND_URL}/films", json=payload)
+                    if res.status_code == 200:
+                        st.toast("✅ Película Creada. Caché invalidada.")
+                        st.success(f"ID Creado: {res.json().get('id')}")
+                    else:
+                        st.error(f"Error del Backend ({res.status_code}): {res.text}")
+                else:
+                    st.warning(
+                        "Por favor, completa todos los campos para crear la película."
+                    )
 
-                            st.metric("Total Films", stats["total_count"])
-                            st.metric("Avg Rating", f"{stats['avg_rating']} ⭐")
-                            st.metric("Oldest Year", stats["oldest_year"])
-                            st.metric("Newest Year", stats["newest_year"])
-                        else:
-                            st.error("❌ Failed to load stats")
-                    except Exception as e:
-                        st.error(f"❌ Error: {e}")
+    # --- ACTUALIZAR ---
+    with t_update:
+        c_id, c_btn = st.columns([1, 4])
+        u_id = c_id.number_input(
+            "ID", min_value=1, step=1, label_visibility="collapsed"
+        )
+        if c_btn.button("📥 Cargar Datos"):
+            res = requests.get(f"{BACKEND_URL}/films/{u_id}")
+            if res.status_code == 200:
+                st.session_state.edit_film = res.json()["data"]
             else:
-                st.error("❌ Could not load genres")
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+                st.error("No existe ninguna película con ese ID.")
 
-    with col_adv2:
-        st.subheader("🔍 Technical Telemetry Log")
-        if len(st.session_state.telemetry) > 0:
-            df_display = pd.DataFrame(st.session_state.telemetry)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        if st.session_state.edit_film:
+            f_edit = st.session_state.edit_film
+            with st.form("form_update", border=False):
+                genre_map = get_genre_map()
+                g_labels = list(genre_map.values())
+                def_idx = (
+                    g_labels.index(f_edit["genre"])
+                    if f_edit["genre"] in g_labels
+                    else 0
+                )
 
-            # Export button
-            csv = df_display.to_csv(index=False)
-            st.download_button(
-                label="📥 Download CSV",
-                data=csv,
-                file_name="telemetry_log.csv",
-                mime="text/csv",
+                c1, c2, c3 = st.columns([2, 1, 1])
+                u_title = c1.text_input("Título", value=f_edit["title"])
+                u_genre = c2.selectbox("Género", g_labels, index=def_idx)
+                u_year = c3.number_input(
+                    "Año", 1888, 2030, value=f_edit["release_year"]
+                )
+
+                c4, c5 = st.columns([2, 1])
+                u_director = c4.text_input("Director", value=f_edit["director"])
+                u_rating = c5.slider(
+                    "Puntuación", 0.0, 10.0, value=float(f_edit["rating"])
+                )
+
+                u_synopsis = st.text_area(
+                    "Sinopsis", value=f_edit["synopsis"], height=80
+                )
+
+                if st.form_submit_button("💾 Guardar Cambios", type="primary"):
+                    payload = {
+                        "title": u_title.strip(),
+                        "genre": u_genre,
+                        "release_year": u_year,
+                        "rating": u_rating,
+                        "director": u_director.strip(),
+                        "synopsis": u_synopsis.strip(),
+                    }
+                    res = requests.put(
+                        f"{BACKEND_URL}/films/{f_edit['id']}", json=payload
+                    )
+                    if res.status_code == 200:
+                        st.toast("♻️ Película actualizada. Caché invalidada.")
+                        st.success(f"ID Actualizado: {u_id}")
+                        st.session_state.edit_film.update(payload)
+                    else:
+                        st.error(f"Error del Backend ({res.status_code}): {res.text}")
+
+    # --- ELIMINAR ---
+    with t_delete:
+        c_id, c_btn = st.columns([1, 4])
+        d_id = c_id.number_input(
+            "ID", min_value=1, step=1, key="del_id", label_visibility="collapsed"
+        )
+        if c_btn.button("🗑️ Eliminar Película", type="secondary"):
+            res_check = requests.get(f"{BACKEND_URL}/films/{d_id}")
+            if res_check.status_code == 200:
+                confirm_delete_dialog(d_id)
+            else:
+                st.error("No existe ninguna película con ese ID.")
+
+        if st.session_state.execute_delete_for_id:
+            del_id = st.session_state.execute_delete_for_id
+            st.session_state.execute_delete_for_id = None
+
+            res = requests.delete(f"{BACKEND_URL}/films/{del_id}")
+            if res.status_code == 200:
+                st.toast("🗑️ Película eliminada. Caché invalidada.")
+                st.success(f"ID Eliminado: {del_id}")
+            else:
+                st.error(f"Error del Backend ({res.status_code}): {res.text}")
+
+# ==========================================
+# TAB 3: TELEMETRÍA (LABORATORIO DE RENDIMIENTO)
+# ==========================================
+with tab_telemetry:
+    if not st.session_state.telemetry:
+        st.info(
+            "📊 Las analíticas están vacías. Ve a la pestaña 'Explorar' y realiza búsquedas para generar métricas."
+        )
+    else:
+        df = pd.DataFrame(st.session_state.telemetry)
+
+        # --- 1. MÉTRICAS GLOBALES (EL IMPACTO) ---
+        st.subheader("1. Impacto Global de la Arquitectura")
+        c1, c2, c3 = st.columns(3)
+
+        db_data = df[df["Origen"].str.contains("DB", na=False)]["Latencia (ms)"]
+        ca_data = df[df["Origen"].str.contains("Caché", na=False)]["Latencia (ms)"]
+
+        db_avg = db_data.mean() if not db_data.empty else 0
+        ca_avg = ca_data.mean() if not ca_data.empty else 0
+
+        c1.metric(
+            "Tiempo Medio PostgreSQL (Miss)", f"{db_avg:.2f} ms" if db_avg else "-"
+        )
+        c2.metric("Tiempo Medio Redis (Hit)", f"{ca_avg:.2f} ms" if ca_avg else "-")
+
+        if ca_avg > 0 and db_avg > 0:
+            aceleracion = db_avg / ca_avg
+            c3.metric(
+                "Factor de Aceleración",
+                f"{aceleracion:.1f}x",
+                delta="🚀 Sistema Optimizado",
             )
         else:
-            st.info("No telemetry data yet")
+            c3.metric("Factor de Aceleración", "-")
 
-st.divider()
+        st.divider()
 
-# --- FOOTER ---
-st.markdown(
-    """
-    <div style='text-align: center; color: #666; padding: 20px;'>
-        <small>🚀 Redis Cache-Aside Pattern Demonstration • FastAPI + PostgreSQL + Redis + Streamlit</small>
-    </div>
-""",
-    unsafe_allow_html=True,
-)
+        # --- 2. ANÁLISIS SEGMENTADO (GRÁFICAS) ---
+        st.subheader("2. Rendimiento por Tipo de Operación")
+
+        # Filtro interactivo basado en las operaciones reales que hayas hecho
+        tipos_disponibles = ["Todas"] + list(df["Tipo de Consulta"].unique())
+        cat = st.selectbox(
+            "Filtrar por operación:", tipos_disponibles, label_visibility="collapsed"
+        )
+
+        plot_df = df if cat == "Todas" else df[df["Tipo de Consulta"] == cat]
+
+        col_g1, col_g2 = st.columns(2)
+        color_map = {"Redis (Caché)": "#10b981", "PostgreSQL (DB)": "#f59e0b"}
+
+        with col_g1:
+            # Gráfico de Barras: Compara las medias de forma aplastante
+            fig_bar = px.histogram(
+                plot_df,
+                x="Tipo de Consulta",
+                y="Latencia (ms)",
+                color="Origen",
+                barmode="group",
+                histfunc="avg",
+                color_discrete_map=color_map,
+                title="Latencia Media Comparada",
+            )
+            fig_bar.update_layout(margin=dict(l=0, r=0, t=40, b=0), height=350)
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        with col_g2:
+            # Gráfico de Líneas: Demuestra la caída de latencia a lo largo del tiempo
+            fig_line = px.line(
+                plot_df.reset_index(),
+                x="index",
+                y="Latencia (ms)",
+                color="Origen",
+                markers=True,
+                color_discrete_map=color_map,
+                title="Evolución Temporal de Peticiones",
+                labels={"index": "Secuencia de Petición"},
+            )
+            fig_line.update_traces(marker=dict(size=10))
+            fig_line.update_layout(margin=dict(l=0, r=0, t=40, b=0), height=350)
+            st.plotly_chart(fig_line, use_container_width=True)
