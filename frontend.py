@@ -3,11 +3,11 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-# --- CONFIGURACIÓN ---
+# --- CONFIG ---
 st.set_page_config(page_title="CBD Panel - Optimización", layout="wide")
 BACKEND_URL = "http://app:8000"
 
-# --- UTILIDADES Y ESTADO ---
+# --- UTILITIES & STATE ---
 if "telemetry" not in st.session_state:
     st.session_state.telemetry = []
 if "edit_film" not in st.session_state:
@@ -37,7 +37,7 @@ def log_telemetry(query_type: str, source: str, latency: float):
     )
 
 
-# --- COMPONENTES VISUALES ---
+# --- UX/UI ---
 def display_performance_tag(source: str, latency: str):
     if "Redis" in source:
         st.success(f"🚀 **{latency} ms** | Respuesta Instantánea (Caché Hit)")
@@ -46,7 +46,6 @@ def display_performance_tag(source: str, latency: str):
 
 
 def display_ultra_minimal_card(film: dict):
-    """Card ultra-compacta para listados (2 por fila)"""
     with st.container(border=True):
         st.markdown(
             f"**{film['title']}** ({film['release_year']})  |  {film['genre']}\n\n"
@@ -55,7 +54,6 @@ def display_ultra_minimal_card(film: dict):
 
 
 def display_detailed_card(film: dict, source: str, latency: str):
-    """Card detallada para búsqueda por ID con latencia visible"""
     with st.container(border=True):
         c1, c2 = st.columns([0.85, 0.15])
         with c1:
@@ -91,10 +89,9 @@ def confirm_delete_dialog(film_id):
         st.rerun()
 
 
-# --- INTERFAZ PRINCIPAL ---
 st.title("Sistema de Gestión de Catálogo")
 
-# Sidebar compacta
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Infraestructura")
     if st.button("🧹 Purgar Caché Redis", use_container_width=True):
@@ -110,13 +107,13 @@ with st.sidebar:
         st.session_state.telemetry = []
         st.success("Historial de telemetría reestablecido.")
 
-# --- TABS PRINCIPALES ---
+# --- MAIN TABS ---
 tab_explore, tab_manage, tab_telemetry = st.tabs(
     ["🔍 Explorar", "🛠️ Gestión (CUD)", "📈 Telemetría"]
 )
 
 # ==========================================
-# TAB 1: EXPLORAR (LECTURA COMPACTA)
+# TAB 1: EXPLORE (QUERYING)
 # ==========================================
 with tab_explore:
     search_type = st.radio(
@@ -126,7 +123,6 @@ with tab_explore:
         label_visibility="collapsed",
     )
 
-    # Input y botón en la misma línea
     col_input, col_btn = st.columns([3, 1])
 
     if search_type == "ID":
@@ -187,27 +183,22 @@ with tab_explore:
         if col_btn.button("🔍 Buscar Género", use_container_width=True) and genre_map:
             selected_key = next(k for k, v in genre_map.items() if v == selected_label)
 
-            # 1. Petición pesada de agregación (Stats)
             res_stats = requests.get(
                 f"{BACKEND_URL}/films/stats", params={"genre": selected_key}
             )
-            # 2. Petición de lista de películas
             res_films = requests.get(
                 f"{BACKEND_URL}/films", params={"genre": selected_key}
             )
 
             if res_stats.status_code == 200 and res_films.status_code == 200:
-                # Datos de Stats
                 s_data = res_stats.json()
                 s_lat = res_stats.headers.get("X-Process-Time", "0")
 
-                # Datos de Films
                 f_data = res_films.json()
                 f_lat = res_films.headers.get("X-Process-Time", "0")
 
                 display_performance_tag(s_data["source"], s_lat)
 
-                # Métricas compactas en una línea
                 sc1, sc2, sc3, sc4 = st.columns(4)
                 total_films = s_data["data"]["total_count"]
                 sc1.metric("Películas", total_films)
@@ -218,25 +209,22 @@ with tab_explore:
                 st.divider()
                 st.markdown(f"#### Muestra del catálogo: {selected_label}")
 
-                # Mostrar las películas en 2 columnas
                 films_list = f_data["data"]
                 cols = st.columns(2)
                 for idx, film in enumerate(films_list[:10]):
                     with cols[idx % 2]:
                         display_ultra_minimal_card(film)
 
-                # Mostrar el texto de "... y X más"
                 if total_films > 10:
                     st.caption(f"👀 *... y {total_films - 10:,} películas más.*")
 
-                # Registramos ambas operaciones en la telemetría para el gráfico
                 log_telemetry("Stats", s_data["source"], s_lat)
                 log_telemetry("Lista Género", f_data["source"], f_lat)
             else:
                 st.error(f"Error del Backend ({res.status_code}): {res.text}")
 
 # ==========================================
-# TAB 2: GESTIÓN (FORMULARIOS COMPACTOS)
+# TAB 2: MANAGE (CUD FORMS)
 # ==========================================
 with tab_manage:
     st.caption(
@@ -244,7 +232,7 @@ with tab_manage:
     )
     t_create, t_update, t_delete = st.tabs(["Crear", "Actualizar", "Eliminar"])
 
-    # --- CREAR ---
+    # --- CREATE ---
     with t_create:
         with st.form("form_create", border=False):
             genre_map = get_genre_map()
@@ -289,7 +277,7 @@ with tab_manage:
                         "Por favor, completa todos los campos para crear la película."
                     )
 
-    # --- ACTUALIZAR ---
+    # --- UPDATE ---
     with t_update:
         c_id, c_btn = st.columns([1, 4])
         u_id = c_id.number_input(
@@ -349,13 +337,13 @@ with tab_manage:
                     else:
                         st.error(f"Error del Backend ({res.status_code}): {res.text}")
 
-    # --- ELIMINAR ---
+    # --- DELETE ---
     with t_delete:
         c_id, c_btn = st.columns([1, 4])
         d_id = c_id.number_input(
             "ID", min_value=1, step=1, key="del_id", label_visibility="collapsed"
         )
-        if c_btn.button("🗑️ Eliminar Película", type="secondary"):
+        if c_btn.button("🗑️ Eliminar Película", type="primary"):
             res_check = requests.get(f"{BACKEND_URL}/films/{d_id}")
             if res_check.status_code == 200:
                 confirm_delete_dialog(d_id)
@@ -374,7 +362,7 @@ with tab_manage:
                 st.error(f"Error del Backend ({res.status_code}): {res.text}")
 
 # ==========================================
-# TAB 3: TELEMETRÍA (LABORATORIO DE RENDIMIENTO)
+# TAB 3: TELEMETRY (ANALYTICS & GRAPHS)
 # ==========================================
 with tab_telemetry:
     if not st.session_state.telemetry:
@@ -384,7 +372,6 @@ with tab_telemetry:
     else:
         df = pd.DataFrame(st.session_state.telemetry)
 
-        # --- 1. MÉTRICAS GLOBALES (EL IMPACTO) ---
         st.subheader("1. Impacto Global de la Arquitectura")
         c1, c2, c3 = st.columns(3)
 
@@ -411,10 +398,8 @@ with tab_telemetry:
 
         st.divider()
 
-        # --- 2. ANÁLISIS SEGMENTADO (GRÁFICAS) ---
         st.subheader("2. Rendimiento por Tipo de Operación")
 
-        # Filtro interactivo basado en las operaciones reales que hayas hecho
         tipos_disponibles = ["Todas"] + list(df["Tipo de Consulta"].unique())
         cat = st.selectbox(
             "Filtrar por operación:", tipos_disponibles, label_visibility="collapsed"
@@ -426,7 +411,6 @@ with tab_telemetry:
         color_map = {"Redis (Caché)": "#10b981", "PostgreSQL (DB)": "#f59e0b"}
 
         with col_g1:
-            # Gráfico de Barras: Compara las medias de forma aplastante
             fig_bar = px.histogram(
                 plot_df,
                 x="Tipo de Consulta",
@@ -441,7 +425,6 @@ with tab_telemetry:
             st.plotly_chart(fig_bar, use_container_width=True)
 
         with col_g2:
-            # Gráfico de Líneas: Demuestra la caída de latencia a lo largo del tiempo
             fig_line = px.line(
                 plot_df.reset_index(),
                 x="index",
