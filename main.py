@@ -183,7 +183,7 @@ def search_films(
             query = text(
                 "SELECT id, title, genre, release_year, rating, director, synopsis "
                 "FROM films "
-                "LIMIT 100"
+                "LIMIT 3125"
             )
             results = conn.execute(query).fetchall()
         else:
@@ -192,7 +192,7 @@ def search_films(
                 "SELECT id, title, genre, release_year, rating, director, synopsis "
                 "FROM films "
                 "WHERE title ILIKE :term OR director ILIKE :term OR synopsis ILIKE :term "
-                "LIMIT 100"
+                "LIMIT 3125"
             )
             results = conn.execute(query, {"term": f"%{clean_q}%"}).fetchall()
 
@@ -410,7 +410,7 @@ def get_films(genre: str | None = Query(None, description="Filter films by genre
             "SELECT id, title, genre, release_year, rating, director, synopsis "
             "FROM films "
             "WHERE (CAST(:genre AS TEXT) IS NULL OR genre ILIKE :genre) "
-            "LIMIT 500"
+            "LIMIT 3125"
         )
         results = conn.execute(query, {"genre": genre_value}).fetchall()
 
