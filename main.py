@@ -67,8 +67,9 @@ def invalidate_caches(
         cache.delete(f"genre:{norm_new}")
         cache.delete(f"stats:{norm_new}")
 
-    for key in cache.scan_iter("search:*"):
-        cache.delete(key)
+    search_keys = list(cache.scan_iter("search:*"))
+    if search_keys:
+        cache.delete(*search_keys)
 
 
 def normalize_key(text: str) -> str:
@@ -138,7 +139,7 @@ def get_genres():
 
 
 @app.get("/films/stats")
-def get_film_stats(
+def get_genre_stats(
     genre: str | None = Query(None, description="Get aggregate stats by genre"),
 ):
     """
