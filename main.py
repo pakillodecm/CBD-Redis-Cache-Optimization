@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 
 import redis
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
@@ -45,6 +45,30 @@ time.sleep(5)
 
 engine = create_engine(DB_URL)
 cache = redis.Redis(host=REDIS_HOST, port=6379, db=0, decode_responses=True)
+
+
+def invalidate_caches(
+    film_id: int | None, old_genre: str | None, new_genre: str | None = None
+):
+    """Purga todas las cachés afectadas en segundo plano."""
+    if film_id:
+        cache.delete(f"film:{film_id}")
+
+    cache.delete("genre:all")
+    cache.delete("stats:all")
+
+    if old_genre:
+        norm_old = normalize_key(old_genre)
+        cache.delete(f"genre:{norm_old}")
+        cache.delete(f"stats:{norm_old}")
+
+    if new_genre and old_genre != new_genre:
+        norm_new = normalize_key(new_genre)
+        cache.delete(f"genre:{norm_new}")
+        cache.delete(f"stats:{norm_new}")
+
+    for key in cache.scan_iter("search:*"):
+        cache.delete(key)
 
 
 def normalize_key(text: str) -> str:
@@ -130,7 +154,7 @@ def get_film_stats(
     if cached_stats:
         return {
             "data": json.loads(cached_stats),
-            "source": "Redis (Cache Hit - Stats)",
+            "source": "Redis (Cache Hit)",
         }
 
     # 2. Heavy SQL Aggregation
@@ -159,7 +183,7 @@ def get_film_stats(
 
         return {
             "data": stats,
-            "source": "PostgreSQL (Cache Miss - Stats)",
+            "source": "PostgreSQL (Cache Miss)",
         }
 
 
@@ -174,7 +198,7 @@ def search_films(
     if cached_results:
         return {
             "data": json.loads(cached_results),
-            "source": "Redis (Cache Hit - Search)",
+            "source": "Redis (Cache Hit)",
         }
 
     with engine.connect() as conn:
@@ -213,12 +237,12 @@ def search_films(
 
         return {
             "data": films,
-            "source": "PostgreSQL (Cache Miss - Search)",
+            "source": "PostgreSQL (Cache Miss)",
         }
 
 
 @app.post("/films")
-def create_film(film: FilmCreate):
+def create_film(film: FilmCreate, background_tasks: BackgroundTasks):
     with engine.connect() as conn:
         # We use .value to get the string from the Enum
         query = text("""
@@ -240,12 +264,7 @@ def create_film(film: FilmCreate):
         new_id = result.fetchone()[0]
         conn.commit()
 
-        # Invalidate genre-specific caches
-        norm_genre = normalize_key(film.genre.value)
-        cache.delete(f"genre:{norm_genre}")
-        cache.delete(f"stats:{norm_genre}")
-        cache.delete("genre:all")
-        cache.delete("stats:all")
+        background_tasks.add_task(invalidate_caches, None, film.genre.value, None)
 
     return {
         "msg": "Film created",
@@ -298,7 +317,7 @@ def get_film_by_id(id: int):
 
 
 @app.put("/films/{id}")
-def update_film(id: int, update: FilmUpdate):
+def update_film(id: int, update: FilmUpdate, background_tasks: BackgroundTasks):
     """
     Full update of a film.
     Handles 'Cross-Genre' cache invalidation if the genre changes.
@@ -336,24 +355,7 @@ def update_film(id: int, update: FilmUpdate):
         )
         conn.commit()
 
-        # C. SMART INVALIDATION
-        # 1. Always kill the specific film cache
-        cache.delete(f"film:{id}")
-
-        # 2. Kill OLD genre caches
-        norm_old = normalize_key(old_genre)
-        cache.delete(f"genre:{norm_old}")
-        cache.delete(f"stats:{norm_old}")
-
-        # 3. If genre changed, kill NEW genre caches too
-        if old_genre != new_genre:
-            norm_new = normalize_key(new_genre)
-            cache.delete(f"genre:{norm_new}")
-            cache.delete(f"stats:{norm_new}")
-
-        # 4. Always refresh global caches for unfiltered reads
-        cache.delete("genre:all")
-        cache.delete("stats:all")
+        background_tasks.add_task(invalidate_caches, id, old_genre, new_genre)
 
     return {
         "msg": "Película actualizada y cachés sincronizadas",
@@ -362,7 +364,7 @@ def update_film(id: int, update: FilmUpdate):
 
 
 @app.delete("/films/{id}")
-def delete_film(id: int):
+def delete_film(id: int, background_tasks: BackgroundTasks):
     with engine.connect() as conn:
         # Using mappings() to avoid the [0] index and use keys instead
         row = (
@@ -378,13 +380,7 @@ def delete_film(id: int):
         conn.execute(text("DELETE FROM films WHERE id = :id"), {"id": id})
         conn.commit()
 
-        # Wipe Redis traces
-        norm_genre = normalize_key(genre)
-        cache.delete(f"film:{id}")
-        cache.delete(f"genre:{norm_genre}")
-        cache.delete(f"stats:{norm_genre}")
-        cache.delete("genre:all")
-        cache.delete("stats:all")
+        background_tasks.add_task(invalidate_caches, id, genre, None)
 
     return {
         "msg": "Film deleted and cache synced",
