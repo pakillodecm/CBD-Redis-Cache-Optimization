@@ -183,11 +183,11 @@ with tab_explore:
         if col_btn.button("🔍 Buscar Género", use_container_width=True) and genre_map:
             selected_key = next(k for k, v in genre_map.items() if v == selected_label)
 
-            res_stats = requests.get(
-                f"{BACKEND_URL}/films/stats", params={"genre": selected_key}
-            )
             res_films = requests.get(
                 f"{BACKEND_URL}/films", params={"genre": selected_key}
+            )
+            res_stats = requests.get(
+                f"{BACKEND_URL}/films/stats", params={"genre": selected_key}
             )
 
             if res_stats.status_code == 200 and res_films.status_code == 200:
@@ -362,79 +362,198 @@ with tab_manage:
                 st.error(f"Error del Backend ({res.status_code}): {res.text}")
 
 # ==========================================
-# TAB 3: TELEMETRY (ANALYTICS & GRAPHS)
+# TAB 3: TELEMETRY (PERFORMANCE ANALYSIS)
 # ==========================================
 with tab_telemetry:
+    st.info("""
+    **Protocolo de Evaluación Automatizado:** Se ejecutará una ráfaga secuencial de 24 peticiones. 
+    El objetivo es forzar 'Cache Misses' (consulta a PostgreSQL) seguidos inmediatamente de 
+    'Cache Hits' (Redis) para la misma consulta, demostrando la caída radical de latencia.
+    """)
+
+    battery = [
+        ("Búsqueda por ID", "/films/123", "PostgreSQL"),
+        ("Búsqueda por ID", "/films/123", "Redis"),
+        ("Búsqueda por ID", "/films/456", "PostgreSQL"),
+        ("Búsqueda por ID", "/films/456", "Redis"),
+        ("Búsqueda por ID", "/films/789", "PostgreSQL"),
+        ("Búsqueda por ID", "/films/789", "Redis"),
+        ("Búsqueda por Texto", "/films/search?q=agua", "PostgreSQL"),
+        ("Búsqueda por Texto", "/films/search?q=agua", "Redis"),
+        ("Búsqueda por Texto", "/films/search?q=aire", "PostgreSQL"),
+        ("Búsqueda por Texto", "/films/search?q=aire", "Redis"),
+        ("Búsqueda por Texto", "/films/search?q=mar", "PostgreSQL"),
+        ("Búsqueda por Texto", "/films/search?q=mar", "Redis"),
+        ("Búsqueda por Género", "/films?genre=drama", "PostgreSQL"),
+        ("Búsqueda por Género", "/films?genre=drama", "Redis"),
+        ("Búsqueda por Género", "/films?genre=horror", "PostgreSQL"),
+        ("Búsqueda por Género", "/films?genre=horror", "Redis"),
+        ("Búsqueda por Género", "/films?genre=adventure", "PostgreSQL"),
+        ("Búsqueda por Género", "/films?genre=adventure", "Redis"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=drama", "PostgreSQL"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=drama", "Redis"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=horror", "PostgreSQL"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=horror", "Redis"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=adventure", "PostgreSQL"),
+        ("Cálculo de Stats por Género", "/films/stats?genre=adventure", "Redis"),
+    ]
+
+    with st.expander("📄 Detalle de las peticiones a ejecutar", expanded=False):
+        df_battery = pd.DataFrame(
+            battery, columns=["Tipo de Petición", "Endpoint", "Origen Esperado"]
+        )
+        st.table(df_battery)
+
+    if st.button("▶️ Ejecutar Batería de Pruebas Automatizada", type="primary"):
+        urls = [
+            f"{BACKEND_URL}/films/123",
+            f"{BACKEND_URL}/films/123",
+            f"{BACKEND_URL}/films/456",
+            f"{BACKEND_URL}/films/456",
+            f"{BACKEND_URL}/films/789",
+            f"{BACKEND_URL}/films/789",
+            f"{BACKEND_URL}/films/search?q=agua",
+            f"{BACKEND_URL}/films/search?q=agua",
+            f"{BACKEND_URL}/films/search?q=aire",
+            f"{BACKEND_URL}/films/search?q=aire",
+            f"{BACKEND_URL}/films/search?q=mar",
+            f"{BACKEND_URL}/films/search?q=mar",
+            f"{BACKEND_URL}/films?genre=drama",
+            f"{BACKEND_URL}/films?genre=drama",
+            f"{BACKEND_URL}/films?genre=horror",
+            f"{BACKEND_URL}/films?genre=horror",
+            f"{BACKEND_URL}/films?genre=adventure",
+            f"{BACKEND_URL}/films?genre=adventure",
+            f"{BACKEND_URL}/films/stats?genre=drama",
+            f"{BACKEND_URL}/films/stats?genre=drama",
+            f"{BACKEND_URL}/films/stats?genre=horror",
+            f"{BACKEND_URL}/films/stats?genre=horror",
+            f"{BACKEND_URL}/films/stats?genre=adventure",
+            f"{BACKEND_URL}/films/stats?genre=adventure",
+        ]
+
+        progress = st.progress(0)
+        import time
+
+        for i, url in enumerate(urls):
+            res = requests.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                lat = res.headers.get("X-Process-Time", "0")
+                log_telemetry(
+                    battery[i][0], data.get("source", "PostgreSQL (DB)"), float(lat)
+                )
+            else:
+                st.error(
+                    f"❌ Error {res.status_code} en la petición a {url}: {res.text}"
+                )
+            time.sleep(0.3)
+            progress.progress((i + 1) / len(urls))
+
+    st.divider()
+
     if not st.session_state.telemetry:
-        st.info(
-            "📊 Las analíticas están vacías. Ve a la pestaña 'Explorar' y realiza búsquedas para generar métricas."
+        st.warning(
+            "⚠️ Sin datos. Ejecuta la batería de pruebas o realiza consultas manualmente para visualizar el análisis."
         )
     else:
         df = pd.DataFrame(st.session_state.telemetry)
 
-        st.subheader("1. Impacto Global de la Arquitectura")
-        c1, c2, c3 = st.columns(3)
+        st.subheader("📊 Resultados de Rendimiento")
 
-        db_data = df[df["Origen"].str.contains("DB", na=False)]["Latencia (ms)"]
-        ca_data = df[df["Origen"].str.contains("Caché", na=False)]["Latencia (ms)"]
-
-        db_avg = db_data.mean() if not db_data.empty else 0
-        ca_avg = ca_data.mean() if not ca_data.empty else 0
-
-        c1.metric(
-            "Tiempo Medio PostgreSQL (Miss)", f"{db_avg:.2f} ms" if db_avg else "-"
+        st.markdown("**1. Resumen Estadístico por Tipo de Operación**")
+        stast_summary = (
+            df.groupby(["Tipo de Consulta", "Origen"])["Latencia (ms)"]
+            .agg(["count", "mean", "median", "min", "max"])
+            .reset_index()
         )
-        c2.metric("Tiempo Medio Redis (Hit)", f"{ca_avg:.2f} ms" if ca_avg else "-")
+        stast_summary.columns = [
+            "Operación",
+            "Origen",
+            "Nº Peticiones",
+            "Media (ms)",
+            "Mediana (ms)",
+            "T. Mínimo (ms)",
+            "T. Máximo (ms)",
+        ]
+        stast_summary["Media (ms)"] = stast_summary["Media (ms)"].round(3)
+        stast_summary["Mediana (ms)"] = stast_summary["Mediana (ms)"].round(3)
+        stast_summary["T. Mínimo (ms)"] = stast_summary["T. Mínimo (ms)"].round(3)
+        stast_summary["T. Máximo (ms)"] = stast_summary["T. Máximo (ms)"].round(3)
 
-        if ca_avg > 0 and db_avg > 0:
-            aceleracion = db_avg / ca_avg
-            c3.metric(
-                "Factor de Aceleración",
-                f"{aceleracion:.1f}x",
-                delta="🚀 Sistema Optimizado",
-            )
+        st.dataframe(stast_summary, hide_index=True, use_container_width=True)
+
+        st.markdown("**2. Análisis de Aceleración por Operación**")
+
+        pivot_df = stast_summary.pivot(
+            index="Operación", columns="Origen", values="Media (ms)"
+        ).reset_index()
+        if (
+            "PostgreSQL (DB)" in pivot_df.columns
+            and "Redis (Caché)" in pivot_df.columns
+        ):
+            pivot_df["Mejora (x)"] = (
+                pivot_df["PostgreSQL (DB)"] / pivot_df["Redis (Caché)"]
+            ).round(1)
+            pivot_df["Mejora (x)"] = pivot_df["Mejora (x)"].apply(lambda x: f"🚀 {x}x")
+
+            st.dataframe(pivot_df, hide_index=True, use_container_width=True)
+
+            db_global = df[df["Origen"].str.contains("DB")]["Latencia (ms)"].median()
+            ca_global = df[df["Origen"].str.contains("Caché")]["Latencia (ms)"].median()
+            if ca_global > 0:
+                st.info(
+                    f"🏆 **Multiplicador Global del Sistema:** La arquitectura es **{(db_global / ca_global):.1f}x** más rápida de media en esta sesión."
+                )
         else:
-            c3.metric("Factor de Aceleración", "-")
+            st.caption("Faltan datos de BD o Caché para calcular los multiplicadores.")
 
         st.divider()
 
-        st.subheader("2. Rendimiento por Tipo de Operación")
-
-        tipos_disponibles = ["Todas"] + list(df["Tipo de Consulta"].unique())
-        cat = st.selectbox(
-            "Filtrar por operación:", tipos_disponibles, label_visibility="collapsed"
-        )
-
-        plot_df = df if cat == "Todas" else df[df["Tipo de Consulta"] == cat]
-
-        col_g1, col_g2 = st.columns(2)
+        col_a, col_b = st.columns(2)
         color_map = {"Redis (Caché)": "#10b981", "PostgreSQL (DB)": "#f59e0b"}
 
-        with col_g1:
-            fig_bar = px.histogram(
-                plot_df,
-                x="Tipo de Consulta",
-                y="Latencia (ms)",
+        with col_a:
+            st.markdown("**3. Comparativa de Latencia por Petición**")
+            fig_bar = px.bar(
+                stast_summary,
+                x="Operación",
+                y="Media (ms)",
                 color="Origen",
                 barmode="group",
-                histfunc="avg",
+                text_auto=".1f",
                 color_discrete_map=color_map,
-                title="Latencia Media Comparada",
             )
-            fig_bar.update_layout(margin=dict(l=0, r=0, t=40, b=0), height=350)
+            fig_bar.update_traces(textposition="outside", textfont_size=12)
+            fig_bar.update_layout(
+                showlegend=True,
+                height=380,
+                margin=dict(t=10, b=10),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+                ),
+            )
             st.plotly_chart(fig_bar, use_container_width=True)
 
-        with col_g2:
-            fig_line = px.line(
-                plot_df.reset_index(),
-                x="index",
-                y="Latencia (ms)",
-                color="Origen",
-                markers=True,
-                color_discrete_map=color_map,
-                title="Evolución Temporal de Peticiones",
-                labels={"index": "Secuencia de Petición"},
+        with col_b:
+            st.markdown("**4. Slope Chart**")
+            st.caption(
+                "Líneas de conexión directas entre Las consultas a la BD y a la Caché."
             )
-            fig_line.update_traces(marker=dict(size=10))
-            fig_line.update_layout(margin=dict(l=0, r=0, t=40, b=0), height=350)
-            st.plotly_chart(fig_line, use_container_width=True)
+            fig_slope = px.line(
+                stast_summary,
+                x="Origen",
+                y="Media (ms)",
+                color="Operación",
+                markers=True,
+            )
+            fig_slope.update_traces(line=dict(width=4), marker=dict(size=12))
+            fig_slope.update_layout(
+                height=380,
+                margin=dict(t=10, b=10),
+                xaxis={
+                    "categoryorder": "array",
+                    "categoryarray": ["PostgreSQL (DB)", "Redis (Caché)"],
+                },
+            )
+            st.plotly_chart(fig_slope, use_container_width=True)
