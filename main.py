@@ -165,12 +165,9 @@ def get_film_stats(
 
 @app.get("/films/search")
 def search_films(
-    q: str = Query(..., description="Search keyword in title and synopsis"),
+    q: str = Query("", description="Search keyword in title, director or synopsis"),
 ):
     clean_q = q.strip()
-    if not clean_q:
-        raise HTTPException(status_code=422, detail="Query cannot be empty")
-
     cache_key = f"search:{normalize_key(clean_q)}"
 
     cached_results = cache.get(cache_key)
@@ -181,13 +178,23 @@ def search_films(
         }
 
     with engine.connect() as conn:
-        query = text(
-            "SELECT id, title, genre, release_year, rating, director, synopsis "
-            "FROM films "
-            "WHERE title ILIKE :term OR synopsis ILIKE :term "
-            "LIMIT 50"
-        )
-        results = conn.execute(query, {"term": f"%{clean_q}%"}).fetchall()
+        if not clean_q:
+            # If no query, return all films
+            query = text(
+                "SELECT id, title, genre, release_year, rating, director, synopsis "
+                "FROM films "
+                "LIMIT 100"
+            )
+            results = conn.execute(query).fetchall()
+        else:
+            # Search in title, synopsis and director
+            query = text(
+                "SELECT id, title, genre, release_year, rating, director, synopsis "
+                "FROM films "
+                "WHERE title ILIKE :term OR director ILIKE :term OR synopsis ILIKE :term "
+                "LIMIT 100"
+            )
+            results = conn.execute(query, {"term": f"%{clean_q}%"}).fetchall()
 
         films = [
             {
