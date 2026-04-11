@@ -499,11 +499,12 @@ with tab_telemetry:
 
             st.dataframe(pivot_df, hide_index=True, use_container_width=True)
 
-            db_global = df[df["Origen"].str.contains("DB")]["Latencia (ms)"].median()
-            ca_global = df[df["Origen"].str.contains("Caché")]["Latencia (ms)"].median()
-            if ca_global > 0:
+            pure_multipliers = pivot_df["PostgreSQL (DB)"] / pivot_df["Redis (Caché)"]
+            median_arq_upgrade = pure_multipliers.median()
+
+            if pd.notna(median_arq_upgrade) and median_arq_upgrade > 0:
                 st.info(
-                    f"🏆 **Multiplicador Global del Sistema:** La arquitectura es **{(db_global / ca_global):.1f}x** más rápida de media en esta sesión."
+                    f"🏆 **Capacidad de Arquitectura:** En promedio (mediana), la caché acelera una operación típica en **{median_arq_upgrade:.1f}x**."
                 )
         else:
             st.caption("Faltan datos de BD o Caché para calcular los multiplicadores.")
