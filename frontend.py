@@ -486,7 +486,7 @@ with tab_telemetry:
         st.markdown("**2. Análisis de Aceleración por Operación**")
 
         pivot_df = stast_summary.pivot(
-            index="Operación", columns="Origen", values="Media (ms)"
+            index="Operación", columns="Origen", values="Mediana (ms)"
         ).reset_index()
         if (
             "PostgreSQL (DB)" in pivot_df.columns
