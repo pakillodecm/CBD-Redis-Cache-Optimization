@@ -28,6 +28,8 @@ def init_connections():
         password=REDIS_PASS,
         db=0,
         decode_responses=True,
+        ssl=True,
+        ssl_cert_reqs=None,
     )
     return engine, cache
 
