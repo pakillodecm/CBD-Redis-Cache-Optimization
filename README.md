@@ -1,4 +1,4 @@
-# CBD: Optimización de Catálogos Masivos con Redis (PoC Cache-Aside)
+# CBD: Optimización de rendimiento mediante el patrón Cache-aside utilizando Redis sobre un motor relacional
 
 Este proyecto es una Prueba de Concepto (PoC) para la asignatura Complementos de Bases de Datos. Su objetivo es demostrar la reducción de latencia mediante el patrón Cache-Aside con Redis sobre PostgreSQL.
 
@@ -26,19 +26,9 @@ Inyecta los 100.000 registros sintéticos ejecutando el script de seeding:
 
 La interfaz de Streamlit permite interactuar con el sistema a través de tres pestañas:
 
-1. **Explorar:** Búsquedas por ID, Texto o Género con indicación del origen del dato (DB o Caché).
+1. **Explorar:** Realizar búsquedas por ID, Texto o Género, con indicación posterior del origen de obtención del dato (DB o Caché).
 2. **Gestión (CUD):** CRUD de películas con invalidación de caché asíncrona tras cada cambio.
-3. **Telemetría:** Laboratorio de pruebas automatizado que ejecuta 24 peticiones secuenciales para generar métricas de aceleración.
-
----
-
-## 🤖 Uso de IA
-
-De acuerdo con las instrucciones de la asignatura:
-
-* **Herramientas:** Gemini 3 Flash (Paid Tier).
-* **Propósito:** Asistencia en el diseño de la lógica de invalidación, refactorización de scripts y estructuración de la documentación técnica.
-* **Análisis Crítico:** Todo el contenido ha sido supervisado, comprendido y verificado íntegramente por el autor.
+3. **Telemetría:** Análisis de pruebas (con batería automatizaza que ejecuta 24 peticiones secuenciales) con métricas de aceleración.
 
 ---
 
